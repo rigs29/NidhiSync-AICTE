@@ -17,8 +17,6 @@ test_aicte_fdr.db
 node_modules/
 frontend/node_modules/
 frontend/dist/
-frontend-v2/node_modules/
-frontend-v2/dist/
 dist/
 .npm
 *.tsbuildinfo
