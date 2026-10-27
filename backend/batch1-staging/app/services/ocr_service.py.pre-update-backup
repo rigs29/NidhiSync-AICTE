@@ -1,0 +1,791 @@
+"""
+OCR & Document Intelligence Service (`backend/app/services/ocr_service.py`)
+===========================================================================
+
+Provides pure-Python document text extraction, scanned-document OCR fallback,
+heuristic field parsing, submitted-vs-extracted comparison, scrutiny remark
+synchronization, and metadata sanitization for the AICTE FDR Management Portal.
+
+This module is decoupled from FastAPI HTTP routers and never fabricates values
+when a document is empty, corrupted, unreadable, or when an external OCR engine
+is unavailable.
+
+Documented Extraction Result Format (`extract_fdr_fields_from_document`):
+-------------------------------------------------------------------------
+{
+    "status": str,
+        # One of:
+        # - "EXTRACTED"                           (>=1 FDR field parsed from text)
+        # - "MANUAL_REVIEW_REQUIRED"              (readable file, 0 matching FDR fields or scanned PDF without OCR)
+        # - "OCR_ENGINE_UNAVAILABLE_MANUAL_REVIEW"(image/scanned PDF, but Tesseract is not installed)
+        # - "EMPTY_OR_CORRUPTED_FILE"             (0 bytes, truncated stream, or invalid PDF/image structure)
+    "source_modality": str,
+        # One of: "PDF_TEXT_EXTRACTION", "SCANNED_PDF_OCR",
+        #         "OPTICAL_CHARACTER_RECOGNITION", "UNSUPPORTED", "INVALID_FILE"
+    "engine": str,
+        # Engine identifier, e.g., "PYPDF_DIGITAL_TEXT_LAYER",
+        # "PYPDF_EMBEDDED_IMAGE_TESSERACT_OCR", "PDF_UNCOMPRESSED_TEXT_STREAM",
+        # "TESSERACT_IMAGE_OCR", "IMAGE_OCR_ENGINE_UNAVAILABLE", "NONE"
+    "confidence": float,
+        # Heuristic field-coverage score in [0.0, 0.95] (capped at 0.95 because
+        # automated extraction is a review aid, never authoritative verification)
+    "fields_extracted_count": int,
+        # Number of structured fields extracted (0 to 5)
+    "extracted_fields": {
+        "fdr_number": Optional[str],
+        "bank_name": Optional[str],
+        "amount": Optional[float],
+        "issue_date": Optional[str],     # ISO-8601 date string YYYY-MM-DD
+        "maturity_date": Optional[str],  # ISO-8601 date string YYYY-MM-DD
+    },
+    "evidence_snippets": Dict[str, str],
+        # Maps each extracted field name to the matched source text snippet
+    "notice": str,
+        # Human-readable explanation of extraction outcome or fallback reason
+}
+"""
+
+from __future__ import annotations
+
+import datetime
+import io
+import re
+from typing import Any, Dict, List, Optional, Tuple
+
+from app.models.models import FDRRecord, User
+
+# Regex used to locate and clean up OCR-generated discrepancy tags inside fdr.scrutiny_remarks
+OCR_REMARK_TAG_PATTERN = re.compile(r"\s*\[OCR Discrepancy Notice:[^\]]*\]")
+
+SUPPORTED_IMAGE_EXTENSIONS = {"jpg", "jpeg", "png"}
+SUPPORTED_PDF_EXTENSIONS = {"pdf"}
+
+BANK_ALIASES: Dict[str, str] = {
+    "sbi": "state bank of india",
+    "state bank of india": "state bank of india",
+    "pnb": "punjab national bank",
+    "punjab national bank": "punjab national bank",
+    "bob": "bank of baroda",
+    "bank of baroda": "bank of baroda",
+    "canara": "canara bank",
+    "canara bank": "canara bank",
+    "hdfc": "hdfc bank",
+    "hdfc bank": "hdfc bank",
+    "icici": "icici bank",
+    "icici bank": "icici bank",
+    "iob": "indian overseas bank",
+    "indian overseas bank": "indian overseas bank",
+    "union bank": "union bank of india",
+    "union bank of india": "union bank of india",
+    "axis": "axis bank",
+    "axis bank": "axis bank",
+    "cbi": "central bank of india",
+    "central bank of india": "central bank of india",
+    "boi": "bank of india",
+    "bank of india": "bank of india",
+    "indian bank": "indian bank",
+}
+
+KNOWN_BANKS: List[str] = [
+    "State Bank of India",
+    "Punjab National Bank",
+    "Canara Bank",
+    "Bank of Baroda",
+    "HDFC Bank",
+    "ICICI Bank",
+    "Indian Overseas Bank",
+    "Union Bank of India",
+    "Axis Bank",
+    "Central Bank of India",
+    "Bank of India",
+    "Indian Bank",
+]
+
+
+def _empty_fields() -> Dict[str, Any]:
+    """Returns an empty template of target FDR fields."""
+    return {
+        "fdr_number": None,
+        "bank_name": None,
+        "amount": None,
+        "issue_date": None,
+        "maturity_date": None,
+    }
+
+
+def _build_extraction_result(
+    status: str,
+    source_modality: str,
+    engine: str,
+    notice: str,
+    extracted_fields: Optional[Dict[str, Any]] = None,
+    evidence_snippets: Optional[Dict[str, str]] = None,
+    confidence: float = 0.0,
+) -> Dict[str, Any]:
+    """Constructs a standardized, documented extraction result dictionary."""
+    fields = extracted_fields if extracted_fields is not None else _empty_fields()
+    found_count = sum(1 for v in fields.values() if v is not None)
+    return {
+        "status": status,
+        "source_modality": source_modality,
+        "engine": engine,
+        "confidence": round(confidence, 2),
+        "fields_extracted_count": found_count,
+        "extracted_fields": fields,
+        "evidence_snippets": evidence_snippets or {},
+        "notice": notice,
+    }
+
+
+def normalize_fdr_number(raw: Optional[str]) -> str:
+    """Strips punctuation, whitespace, and leading zeroes for normalized comparison."""
+    if not raw:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", raw).upper()
+    return cleaned.lstrip("0") or cleaned
+
+
+def normalize_bank_name(raw: Optional[str]) -> str:
+    """Normalizes bank names and common Indian bank abbreviations."""
+    if not raw:
+        return ""
+    cleaned = re.sub(r"[^a-z0-9\s]", " ", raw.lower())
+    cleaned = " ".join(cleaned.split())
+    return BANK_ALIASES.get(cleaned, cleaned)
+
+
+def _extract_image_ocr_text(file_bytes: bytes) -> Tuple[str, str, str, Optional[str]]:
+    """
+    Validates raster image bytes (JPG, JPEG, PNG) using Pillow and performs
+    Optical Character Recognition via pytesseract when available.
+
+    Never decodes raw binary image bytes as UTF-8/ASCII text.
+
+    Returns:
+        (extracted_text, status_hint, engine_name, error_or_fallback_notice)
+    """
+    # 1. Verify image integrity with Pillow first so corrupted images are caught cleanly
+    try:
+        from PIL import Image, UnidentifiedImageError  # type: ignore
+    except ImportError:
+        return (
+            "",
+            "OCR_ENGINE_UNAVAILABLE_MANUAL_REVIEW",
+            "PILLOW_UNAVAILABLE",
+            "Image processing library (Pillow) is not installed on the server. Routed for manual officer review.",
+        )
+
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as verify_img:
+            verify_img.verify()
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
+        return (
+            "",
+            "EMPTY_OR_CORRUPTED_FILE",
+            "INVALID_IMAGE_STREAM",
+            f"Uploaded image file is corrupted or unreadable ({type(exc).__name__}). Manual officer review required.",
+        )
+
+    # 2. Attempt OCR via pytesseract
+    try:
+        import pytesseract  # type: ignore
+    except ImportError:
+        return (
+            "",
+            "OCR_ENGINE_UNAVAILABLE_MANUAL_REVIEW",
+            "IMAGE_OCR_ENGINE_UNAVAILABLE",
+            "Raster image validated, but pytesseract is not installed on the server. Routed for manual officer review.",
+        )
+
+    try:
+        with Image.open(io.BytesIO(file_bytes)) as img:
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            ocr_text = pytesseract.image_to_string(img) or ""
+            cleaned = ocr_text.strip()
+            if len(cleaned) >= 10:
+                return cleaned, "EXTRACTED_TEXT", "TESSERACT_IMAGE_OCR", None
+            return (
+                "",
+                "MANUAL_REVIEW_REQUIRED",
+                "TESSERACT_IMAGE_OCR_LOW_TEXT",
+                "Image OCR executed via Tesseract, but insufficient readable text was resolved from the scan. Manual officer review required.",
+            )
+    except Exception as exc:
+        return (
+            "",
+            "OCR_ENGINE_UNAVAILABLE_MANUAL_REVIEW",
+            "IMAGE_OCR_ENGINE_UNAVAILABLE",
+            f"Raster image validated, but Tesseract OCR binary is unavailable or failed ({type(exc).__name__}). Routed for manual officer review.",
+        )
+
+
+def _extract_uncompressed_pdf_stream_text(file_bytes: bytes) -> str:
+    """
+    Fallback parser for lightweight uncompressed PDF streams (such as synthetic
+    test fixtures) that contain plain ASCII key-value lines without full font tables.
+    """
+    decoded = file_bytes.decode("latin-1", errors="ignore")
+    pdf_syntax_tokens = {
+        "obj", "endobj", "stream", "endstream", "xref", "trailer", "startxref",
+        "Type", "Catalog", "Pages", "Page", "MediaBox", "Parent", "Resources",
+        "Font", "ProcSet", "Length", "Filter", "FlateDecode",
+    }
+    candidate_lines: List[str] = []
+    for raw_line in decoded.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("%PDF-") or line.startswith("%%EOF"):
+            continue
+        if re.match(r"^\d{10}\s+\d{5}\s+[nf]\s*$", line):
+            continue
+        words = set(re.findall(r"[A-Za-z]+", line))
+        if words and words.issubset(pdf_syntax_tokens):
+            continue
+        if re.search(
+            r"(FDR|Bank|Amount|Deposit|Principal|Issue|Maturity|INR|Rs|\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4})",
+            line,
+            re.IGNORECASE,
+        ):
+            candidate_lines.append(line)
+
+    return "\n".join(candidate_lines).strip()
+
+
+def _extract_pdf_text_with_ocr_fallback(
+    file_bytes: bytes,
+) -> Tuple[str, str, str, str, Optional[str]]:
+    """
+    Extracts text from a PDF document with a 3-stage fallback strategy:
+      Stage 1: Digital text extraction via `pypdf.PdfReader`.
+      Stage 2: Scanned PDF fallback — if the PDF has 0 digital text, inspects
+               embedded page images (`page.images`) via Pillow + `pytesseract`.
+      Stage 3: Uncompressed ASCII text literal extraction for lightweight/synthetic PDFs.
+
+    Returns:
+        (raw_text, status_hint, source_modality, engine_name, notice)
+    """
+    stripped = file_bytes.lstrip()
+    if not stripped.startswith(b"%PDF-"):
+        return (
+            "",
+            "EMPTY_OR_CORRUPTED_FILE",
+            "INVALID_FILE",
+            "INVALID_PDF_HEADER",
+            "File does not begin with a valid %PDF- header. Manual officer review required.",
+        )
+
+    pypdf_available = False
+    pdf_corrupted_error: Optional[str] = None
+    embedded_image_payloads: List[bytes] = []
+
+    try:
+        from pypdf import PdfReader  # type: ignore
+        from pypdf.errors import PdfReadError  # type: ignore
+
+        pypdf_available = True
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes), strict=False)
+            if getattr(reader, "is_encrypted", False):
+                try:
+                    reader.decrypt("")
+                except Exception:
+                    return (
+                        "",
+                        "MANUAL_REVIEW_REQUIRED",
+                        "PDF_TEXT_EXTRACTION",
+                        "PYPDF_ENCRYPTED_PDF",
+                        "PDF is password-protected/encrypted and cannot be read automatically. Manual officer review required.",
+                    )
+
+            page_texts: List[str] = []
+            for page in reader.pages:
+                txt = (page.extract_text() or "").strip()
+                if txt:
+                    page_texts.append(txt)
+                else:
+                    # Collect embedded images on textless pages for scanned-PDF OCR fallback
+                    try:
+                        for img_file in getattr(page, "images", []):
+                            img_data = getattr(img_file, "data", None)
+                            if isinstance(img_data, (bytes, bytearray)) and len(img_data) > 0:
+                                embedded_image_payloads.append(bytes(img_data))
+                    except Exception:
+                        pass
+
+            joined_digital_text = "\n".join(page_texts).strip()
+            if len(joined_digital_text) >= 12:
+                return (
+                    joined_digital_text,
+                    "EXTRACTED_TEXT",
+                    "PDF_TEXT_EXTRACTION",
+                    "PYPDF_DIGITAL_TEXT_LAYER",
+                    None,
+                )
+        except (PdfReadError, ValueError, OSError, EOFError) as exc:
+            pdf_corrupted_error = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:
+            pdf_corrupted_error = f"{type(exc).__name__}"
+    except ImportError:
+        pypdf_available = False
+
+    # Stage 2: Scanned PDF OCR Fallback on embedded page images
+    if embedded_image_payloads:
+        ocr_pages: List[str] = []
+        last_status = "MANUAL_REVIEW_REQUIRED"
+        last_engine = "PYPDF_EMBEDDED_IMAGE_OCR"
+        last_notice: Optional[str] = None
+
+        for img_bytes in embedded_image_payloads[:5]:  # Cap at first 5 scan images for safety
+            img_text, st_hint, eng, notice = _extract_image_ocr_text(img_bytes)
+            last_status = st_hint
+            last_engine = f"PYPDF_SCANNED_IMAGE_{eng}"
+            last_notice = notice
+            if img_text:
+                ocr_pages.append(img_text)
+
+        joined_ocr = "\n".join(ocr_pages).strip()
+        if len(joined_ocr) >= 10:
+            return (
+                joined_ocr,
+                "EXTRACTED_TEXT",
+                "SCANNED_PDF_OCR",
+                "PYPDF_EMBEDDED_IMAGE_TESSERACT_OCR",
+                None,
+            )
+        return (
+            "",
+            last_status,
+            "SCANNED_PDF_OCR",
+            last_engine,
+            last_notice
+            or "Scanned PDF detected (embedded images without digital text), and OCR could not resolve text. Manual officer review required.",
+        )
+
+    # Stage 3: Uncompressed stream literal fallback (supports simple synthetic PDFs in tests)
+    stream_text = _extract_uncompressed_pdf_stream_text(file_bytes)
+    if len(stream_text) >= 10:
+        return (
+            stream_text,
+            "EXTRACTED_TEXT",
+            "PDF_TEXT_EXTRACTION",
+            "PDF_UNCOMPRESSED_TEXT_STREAM",
+            None,
+        )
+
+    # If pypdf raised a structural read error and no uncompressed text stream was found, report corruption
+    if pdf_corrupted_error:
+        return (
+            "",
+            "EMPTY_OR_CORRUPTED_FILE",
+            "INVALID_FILE",
+            "PYPDF_READ_ERROR",
+            f"PDF structure is corrupted or unreadable ({pdf_corrupted_error}). Manual officer review required.",
+        )
+
+    return (
+        "",
+        "MANUAL_REVIEW_REQUIRED",
+        "PDF_TEXT_EXTRACTION",
+        "PDF_NO_TEXT_LAYER_SCANNED_OR_EMPTY" if pypdf_available else "PYPDF_NOT_INSTALLED",
+        "PDF contains no machine-readable text layer (blank or scanned PDF without extractable text). Manual officer review required.",
+    )
+
+
+def _parse_date_string(val: str) -> Optional[str]:
+    """Normalizes common date formats to ISO-8601 (YYYY-MM-DD)."""
+    cleaned = val.strip()
+    for fmt in (
+        "%Y-%m-%d",
+        "%d-%m-%Y",
+        "%d/%m/%Y",
+        "%Y/%m/%d",
+        "%d.%m.%Y",
+        "%d-%b-%Y",
+        "%d %b %Y",
+        "%d-%B-%Y",
+        "%d %B %Y",
+    ):
+        try:
+            return datetime.datetime.strptime(cleaned, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_fdr_fields_from_text(raw_text: str) -> Tuple[Dict[str, Any], Dict[str, str]]:
+    """
+    Heuristically parses structured FDR fields and source evidence snippets
+    from extracted document text.
+    """
+    extracted = _empty_fields()
+    evidence: Dict[str, str] = {}
+
+    # 1. FDR / Reference Number
+    fdr_match = re.search(
+        r"(?:FDR\s*(?:No|Number|Ref|Reference|#)\s*[:\-]?\s*)([A-Z0-9][A-Z0-9\-\/]{4,30})",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if not fdr_match:
+        fdr_match = re.search(
+            r"\b([A-Z]{2,5}\-(?:FDR|SEC|CORPUS|DEP|TECH|AUTO)[A-Z0-9\-]{3,25})\b",
+            raw_text,
+            re.IGNORECASE,
+        )
+    if fdr_match:
+        extracted["fdr_number"] = fdr_match.group(1).strip().upper()
+        evidence["fdr_number"] = fdr_match.group(0).strip()[:80]
+
+    # 2. Issuing Bank Name
+    bank_label_match = re.search(
+        r"(?:Bank\s*(?:Name)?\s*[:\-]\s*)([A-Za-z\s]{4,45}?)(?:\n|,|Branch|$)",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if bank_label_match:
+        candidate_bank = bank_label_match.group(1).strip()
+        extracted["bank_name"] = candidate_bank
+        evidence["bank_name"] = bank_label_match.group(0).strip()[:80]
+    else:
+        for bank in KNOWN_BANKS:
+            if bank.lower() in raw_text.lower():
+                extracted["bank_name"] = bank
+                evidence["bank_name"] = f"Matched bank name '{bank}' in document text"
+                break
+
+    # 3. Deposit Amount (INR / Rs / ₹)
+    amount_match = re.search(
+        r"(?:Amount|Deposit|Principal|Rs\.?|INR|₹)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([0-9][0-9,]{3,15}(?:\.\d{1,2})?)",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if amount_match:
+        clean_num = amount_match.group(1).replace(",", "")
+        try:
+            val = float(clean_num)
+            if val >= 1000.0:
+                extracted["amount"] = val
+                evidence["amount"] = amount_match.group(0).strip()[:80]
+        except ValueError:
+            pass
+
+    # 4. Issue Date
+    issue_match = re.search(
+        r"(?:Issue\s*Date|Date\s*of\s*Issue|Deposit\s*Date|Issued\s*On)\s*[:\-]?\s*(\d{1,4}[\-\/\.\s][A-Za-z0-9]{1,9}[\-\/\.\s]\d{2,4})",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if issue_match:
+        parsed_issue = _parse_date_string(issue_match.group(1))
+        if parsed_issue:
+            extracted["issue_date"] = parsed_issue
+            evidence["issue_date"] = issue_match.group(0).strip()[:80]
+
+    # 5. Maturity Date
+    maturity_match = re.search(
+        r"(?:Maturity\s*Date|Date\s*of\s*Maturity|Matures\s*On|Expiry\s*Date)\s*[:\-]?\s*(\d{1,4}[\-\/\.\s][A-Za-z0-9]{1,9}[\-\/\.\s]\d{2,4})",
+        raw_text,
+        re.IGNORECASE,
+    )
+    if maturity_match:
+        parsed_maturity = _parse_date_string(maturity_match.group(1))
+        if parsed_maturity:
+            extracted["maturity_date"] = parsed_maturity
+            evidence["maturity_date"] = maturity_match.group(0).strip()[:80]
+
+    return extracted, evidence
+
+
+def extract_fdr_fields_from_document(
+    file_bytes: Optional[bytes],
+    filename: Optional[str],
+) -> Dict[str, Any]:
+    """
+    Main entry point for extracting structured FDR fields from an uploaded PDF
+    or image (`.jpg`, `.jpeg`, `.png`).
+
+    Handles empty, corrupted, and unreadable files gracefully without raising
+    unhandled exceptions.
+    """
+    if not file_bytes or len(file_bytes) == 0:
+        return _build_extraction_result(
+            status="EMPTY_OR_CORRUPTED_FILE",
+            source_modality="INVALID_FILE",
+            engine="NONE",
+            notice="Uploaded file is empty (0 bytes). Manual officer review required.",
+        )
+
+    safe_name = (filename or "").strip()
+    ext = safe_name.rsplit(".", 1)[-1].lower() if "." in safe_name else "pdf"
+
+    if ext in SUPPORTED_PDF_EXTENSIONS:
+        raw_text, status_hint, source_modality, engine_name, fallback_notice = (
+            _extract_pdf_text_with_ocr_fallback(file_bytes)
+        )
+    elif ext in SUPPORTED_IMAGE_EXTENSIONS:
+        raw_text, status_hint, engine_name, fallback_notice = _extract_image_ocr_text(file_bytes)
+        source_modality = (
+            "INVALID_FILE"
+            if status_hint == "EMPTY_OR_CORRUPTED_FILE"
+            else "OPTICAL_CHARACTER_RECOGNITION"
+        )
+    else:
+        return _build_extraction_result(
+            status="MANUAL_REVIEW_REQUIRED",
+            source_modality="UNSUPPORTED",
+            engine="NONE",
+            notice=f"Unsupported file extension '.{ext}' for automated extraction. Manual officer review required.",
+        )
+
+    if not raw_text:
+        return _build_extraction_result(
+            status=status_hint,
+            source_modality=source_modality,
+            engine=engine_name,
+            notice=fallback_notice or "No readable text could be extracted. Manual officer review required.",
+        )
+
+    extracted, evidence = _parse_fdr_fields_from_text(raw_text)
+    found_count = sum(1 for v in extracted.values() if v is not None)
+    confidence = (found_count / 5.0) * 0.95 if found_count > 0 else 0.0
+
+    if found_count == 0:
+        return _build_extraction_result(
+            status="MANUAL_REVIEW_REQUIRED",
+            source_modality=source_modality,
+            engine=engine_name,
+            notice="Document text was extracted, but no standard FDR key-value fields were recognized. Manual officer review required.",
+            extracted_fields=extracted,
+            evidence_snippets=evidence,
+            confidence=0.0,
+        )
+
+    return _build_extraction_result(
+        status="EXTRACTED",
+        source_modality=source_modality,
+        engine=engine_name,
+        notice=f"Heuristically extracted {found_count}/5 fields via {engine_name}. Officer verification required.",
+        extracted_fields=extracted,
+        evidence_snippets=evidence,
+        confidence=confidence,
+    )
+
+
+def compare_fdr_with_extractions(fdr: FDRRecord) -> Dict[str, Any]:
+    """
+    Compares submitted FDRRecord fields against the most recent Document's
+    extracted fields (incorporating any authorized officer overrides).
+    """
+    all_field_keys = ["fdr_number", "bank_name", "amount", "issue_date", "maturity_date"]
+
+    if not getattr(fdr, "documents", None):
+        return {
+            "has_document": False,
+            "extraction_status": "NO_DOCUMENT",
+            "source_modality": "NONE",
+            "engine": "NONE",
+            "confidence": 0.0,
+            "mismatches": [],
+            "missing_fields": list(all_field_keys),
+            "field_comparisons": [],
+            "notice": "No document uploaded for this FDR record.",
+        }
+
+    latest_doc = sorted(fdr.documents, key=lambda d: d.id, reverse=True)[0]
+    meta = latest_doc.upload_metadata if isinstance(latest_doc.upload_metadata, dict) else {}
+    ocr_data = meta.get("ocr_extraction")
+
+    if not isinstance(ocr_data, dict):
+        return {
+            "has_document": True,
+            "document_id": latest_doc.id,
+            "extraction_status": "MANUAL_REVIEW_REQUIRED",
+            "source_modality": "SEED_OR_LEGACY",
+            "engine": "NONE",
+            "confidence": 0.0,
+            "mismatches": [],
+            "missing_fields": list(all_field_keys),
+            "field_comparisons": [],
+            "notice": "Seeded or legacy document without structured extraction metadata; manual officer review required.",
+        }
+
+    ext_fields = ocr_data.get("extracted_fields") or {}
+    evidence = ocr_data.get("evidence_snippets") or {}
+    overrides = meta.get("officer_overrides") or {}
+    effective_fields = {**ext_fields, **overrides}
+
+    sub_issue = (
+        fdr.issue_date.date().isoformat()
+        if isinstance(fdr.issue_date, datetime.datetime)
+        else str(fdr.issue_date)
+    )
+    sub_maturity = (
+        fdr.maturity_date.date().isoformat()
+        if isinstance(fdr.maturity_date, datetime.datetime)
+        else str(fdr.maturity_date)
+    )
+
+    comparisons: List[Dict[str, Any]] = []
+    mismatches: List[str] = []
+    missing_fields: List[str] = []
+
+    # 1. FDR Reference Number
+    ext_fdr_no = effective_fields.get("fdr_number")
+    if ext_fdr_no is None:
+        fdr_no_match = None
+        missing_fields.append("fdr_number")
+    else:
+        fdr_no_match = normalize_fdr_number(str(ext_fdr_no)) == normalize_fdr_number(fdr.fdr_number)
+    comparisons.append({
+        "field": "fdr_number",
+        "label": "FDR Reference Number",
+        "submitted": fdr.fdr_number,
+        "extracted": ext_fdr_no,
+        "overridden": "fdr_number" in overrides,
+        "matches": fdr_no_match,
+        "needs_manual_review": fdr_no_match is not True,
+        "evidence": evidence.get("fdr_number"),
+    })
+    if fdr_no_match is False:
+        mismatches.append(
+            f"FDR Number Mismatch: Form submitted '{fdr.fdr_number}' vs Document shows '{ext_fdr_no}'."
+        )
+
+    # 2. Issuing Bank Name
+    ext_bank = effective_fields.get("bank_name")
+    if ext_bank is None:
+        bank_match = None
+        missing_fields.append("bank_name")
+    else:
+        bank_match = normalize_bank_name(str(ext_bank)) == normalize_bank_name(fdr.bank_name)
+    comparisons.append({
+        "field": "bank_name",
+        "label": "Issuing Bank",
+        "submitted": fdr.bank_name,
+        "extracted": ext_bank,
+        "overridden": "bank_name" in overrides,
+        "matches": bank_match,
+        "needs_manual_review": bank_match is not True,
+        "evidence": evidence.get("bank_name"),
+    })
+    if bank_match is False:
+        mismatches.append(
+            f"Bank Name Mismatch: Form submitted '{fdr.bank_name}' vs Document shows '{ext_bank}'."
+        )
+
+    # 3. Deposit Amount
+    ext_amt = effective_fields.get("amount")
+    if ext_amt is None:
+        amt_match = None
+        missing_fields.append("amount")
+    else:
+        try:
+            amt_match = abs(float(ext_amt) - float(fdr.amount)) < 1.0
+        except (TypeError, ValueError):
+            amt_match = False
+    comparisons.append({
+        "field": "amount",
+        "label": "Deposit Amount (INR)",
+        "submitted": fdr.amount,
+        "extracted": ext_amt,
+        "overridden": "amount" in overrides,
+        "matches": amt_match,
+        "needs_manual_review": amt_match is not True,
+        "evidence": evidence.get("amount"),
+    })
+    if amt_match is False and ext_amt is not None:
+        mismatches.append(
+            f"Deposit Amount Discrepancy: Form submitted ₹{fdr.amount:,.2f} vs Document shows ₹{float(ext_amt):,.2f}."
+        )
+
+    # 4. Issue Date
+    ext_issue = effective_fields.get("issue_date")
+    if ext_issue is None:
+        issue_match = None
+        missing_fields.append("issue_date")
+    else:
+        issue_match = str(ext_issue) == sub_issue
+    comparisons.append({
+        "field": "issue_date",
+        "label": "Issue Date",
+        "submitted": sub_issue,
+        "extracted": ext_issue,
+        "overridden": "issue_date" in overrides,
+        "matches": issue_match,
+        "needs_manual_review": issue_match is not True,
+        "evidence": evidence.get("issue_date"),
+    })
+    if issue_match is False:
+        mismatches.append(
+            f"Issue Date Mismatch: Form submitted '{sub_issue}' vs Document shows '{ext_issue}'."
+        )
+
+    # 5. Maturity Date
+    ext_mat = effective_fields.get("maturity_date")
+    if ext_mat is None:
+        mat_match = None
+        missing_fields.append("maturity_date")
+    else:
+        mat_match = str(ext_mat) == sub_maturity
+    comparisons.append({
+        "field": "maturity_date",
+        "label": "Maturity Date",
+        "submitted": sub_maturity,
+        "extracted": ext_mat,
+        "overridden": "maturity_date" in overrides,
+        "matches": mat_match,
+        "needs_manual_review": mat_match is not True,
+        "evidence": evidence.get("maturity_date"),
+    })
+    if mat_match is False:
+        mismatches.append(
+            f"Maturity Date Mismatch: Form submitted '{sub_maturity}' vs Document shows '{ext_mat}'."
+        )
+
+    return {
+        "has_document": True,
+        "document_id": latest_doc.id,
+        "extraction_status": ocr_data.get("status", "UNKNOWN"),
+        "source_modality": ocr_data.get("source_modality", "UNKNOWN"),
+        "engine": ocr_data.get("engine", "NONE"),
+        "confidence": ocr_data.get("confidence", 0.0),
+        "mismatches": mismatches,
+        "missing_fields": missing_fields,
+        "field_comparisons": comparisons,
+        "notice": ocr_data.get("notice"),
+        "has_officer_overrides": bool(overrides),
+    }
+
+
+def sync_fdr_ocr_discrepancy_remarks(fdr: FDRRecord, mismatches: List[str]) -> None:
+    """
+    Synchronizes or removes the `[OCR Discrepancy Notice: ...]` tag inside
+    `fdr.scrutiny_remarks` so officer corrections never leave stale OCR warnings behind.
+    """
+    current_remarks = fdr.scrutiny_remarks or ""
+    cleaned_remarks = OCR_REMARK_TAG_PATTERN.sub("", current_remarks).strip()
+
+    if mismatches:
+        tag = f"[OCR Discrepancy Notice: {' | '.join(mismatches)}]"
+        fdr.scrutiny_remarks = f"{cleaned_remarks} {tag}".strip() if cleaned_remarks else tag
+    else:
+        fdr.scrutiny_remarks = cleaned_remarks or None
+
+
+def sanitize_document_metadata(
+    raw_meta: Optional[Dict[str, Any]],
+    current_user: Optional[User] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Strips internal user email addresses and seed flags (`uploaded_by`,
+    `last_override_by`, `demo_seed`) when returning document metadata to college users.
+    """
+    if not raw_meta or not isinstance(raw_meta, dict):
+        return None
+
+    sanitized = dict(raw_meta)
+    if current_user is None or getattr(current_user, "role", None) == "COLLEGE_USER":
+        sanitized.pop("uploaded_by", None)
+        sanitized.pop("last_override_by", None)
+        sanitized.pop("demo_seed", None)
+    return sanitized
