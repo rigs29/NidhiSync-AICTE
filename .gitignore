@@ -34,6 +34,7 @@ backend/uploads/*
 .pytest_cache/
 .coverage
 htmlcov/
+scratch/
 *.zip
 !infrastructure/dummy_payload.zip
 

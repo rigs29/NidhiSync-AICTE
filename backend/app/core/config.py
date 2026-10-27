@@ -11,8 +11,11 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     
-    # Database
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./aicte_fdr.db")
+    # Database: In serverless environments (e.g. Vercel / AWS Lambda), the filesystem is read-only except /tmp
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "sqlite:////tmp/aicte_fdr.db" if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME")) else "sqlite:///./aicte_fdr.db"
+    )
     
     # CORS Configuration
     BACKEND_CORS_ORIGINS: List[str] = [
@@ -26,8 +29,11 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
     ] + [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
     
-    # Storage Configuration
-    STORAGE_DIR: str = os.getenv("STORAGE_DIR", os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads"))
+    # Storage Configuration: In serverless environments, local uploads fallback to /tmp
+    STORAGE_DIR: str = os.getenv(
+        "STORAGE_DIR",
+        "/tmp/uploads" if (os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME")) else os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
+    )
     MAX_UPLOAD_SIZE_BYTES: int = 10 * 1024 * 1024  # 10 MB limit
     ALLOWED_EXTENSIONS: List[str] = ["pdf", "jpg", "jpeg", "png"]
     

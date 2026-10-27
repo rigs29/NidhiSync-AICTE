@@ -1,17 +1,16 @@
 const getApiBase = () => {
-  let envUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
-  if (envUrl) {
-    if (!envUrl.startsWith('http://') && !envUrl.startsWith('https://')) {
+  // If an explicit API URL or base URL environment variable is set, format and return it
+  const rawEnv = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+  if (rawEnv && typeof rawEnv === 'string' && rawEnv.trim() !== '') {
+    let envUrl = rawEnv.trim();
+    if (!envUrl.startsWith('http://') && !envUrl.startsWith('https://') && !envUrl.startsWith('/')) {
       envUrl = `https://${envUrl}`;
     }
     return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl.replace(/\/+$/, '')}/api/v1`;
   }
-  if (
-    typeof window !== 'undefined' && 
-    (window.location.hostname.includes('.onrender.com') || window.location.hostname.includes('.vercel.app'))
-  ) {
-    return 'https://aicte-fdr-backend.onrender.com/api/v1';
-  }
+
+  // Default to relative path '/api/v1' for production rewrites (Vercel/Netlify/Reverse Proxy)
+  // and local Vite dev server proxying to http://127.0.0.1:8000
   return '/api/v1';
 };
 
@@ -19,8 +18,10 @@ export const API_BASE = getApiBase();
 
 export const getDownloadUrl = (pathOrKey: string, directUrl?: string | null) => {
   if (directUrl && directUrl.startsWith('http')) {
+    // If backend returns an internal/localhost URL but client is on a non-local domain, rewrite to API_BASE
     if (typeof window !== 'undefined' && directUrl.includes('localhost:8000') && window.location.hostname !== 'localhost') {
-      return directUrl.replace('localhost:8000', `${window.location.hostname}:8000`);
+      const parsedPath = directUrl.replace(/^https?:\/\/[^/]+/, '');
+      return `${API_BASE.replace(/\/api\/v1\/?$/, '')}${parsedPath}`;
     }
     return directUrl;
   }
@@ -44,7 +45,8 @@ export const fetchDocumentBlob = async (pathOrKey: string, directUrl?: string | 
   if (directUrl && directUrl.startsWith('http')) {
     targetUrl = directUrl;
     if (typeof window !== 'undefined' && targetUrl.includes('localhost:8000') && window.location.hostname !== 'localhost') {
-      targetUrl = targetUrl.replace('localhost:8000', `${window.location.hostname}:8000`);
+      const parsedPath = targetUrl.replace(/^https?:\/\/[^/]+/, '');
+      targetUrl = `${API_BASE.replace(/\/api\/v1\/?$/, '')}${parsedPath}`;
     }
   } else {
     const cleanKey = pathOrKey.replace(/^\/+/, '');
