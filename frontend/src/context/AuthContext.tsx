@@ -25,7 +25,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return saved ? JSON.parse(saved) : null;
   });
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('aicte_token'));
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(() => !localStorage.getItem('aicte_token'));
 
   const saveAuthSession = (data: TokenResponse) => {
     localStorage.setItem('aicte_token', data.access_token);
@@ -54,23 +54,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   useEffect(() => {
+    let active = true;
     const initAuth = async () => {
       const storedToken = localStorage.getItem('aicte_token');
       if (storedToken) {
         try {
           const me = await api.get<User>('/auth/me');
-          setUser(me);
-          localStorage.setItem('aicte_user', JSON.stringify(me));
-        } catch {
-          localStorage.removeItem('aicte_token');
-          localStorage.removeItem('aicte_user');
-          setToken(null);
-          setUser(null);
+          if (active) {
+            setUser(me);
+            localStorage.setItem('aicte_user', JSON.stringify(me));
+          }
+        } catch (err: any) {
+          // Resilient session handling: only clear token if server explicitly rejects with 401
+          if (err?.status === 401) {
+            if (active) {
+              localStorage.removeItem('aicte_token');
+              localStorage.removeItem('aicte_user');
+              setToken(null);
+              setUser(null);
+            }
+          } else {
+            console.warn('Network hiccup during session refresh; retaining active session:', err);
+          }
         }
       }
-      setIsLoading(false);
+      if (active) {
+        setIsLoading(false);
+      }
     };
     initAuth();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const login = async (email: string, password: string) => {

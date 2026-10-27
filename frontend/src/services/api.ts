@@ -57,8 +57,26 @@ export const fetchDocumentBlob = async (pathOrKey: string, directUrl?: string | 
     }
   }
 
-  const response = await fetch(targetUrl, { headers });
+  let response: Response;
+  try {
+    response = await fetch(targetUrl, { headers });
+  } catch {
+    response = new Response(null, { status: 500 });
+  }
+
   if (!response.ok) {
+    // Secondary fallback: static documents served via public assets
+    const filename = pathOrKey.split('/').pop() || pathOrKey;
+    try {
+      const staticUrl = `/documents/${encodeURIComponent(filename)}`;
+      const staticRes = await fetch(staticUrl);
+      if (staticRes.ok) {
+        return await staticRes.blob();
+      }
+    } catch {
+      // Continue to error throw
+    }
+
     let errorDetail = `Document retrieval failed (${response.status})`;
     try {
       const errJson = await response.json();

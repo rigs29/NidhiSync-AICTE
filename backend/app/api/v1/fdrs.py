@@ -32,6 +32,7 @@ def _enrich_fdr(fdr: FDRRecord, db: Session) -> FDRResponse:
     for doc in fdr.documents:
         doc_storage = get_storage(doc.storage_provider)
         url = doc_storage.get_download_url(doc.storage_key, doc.original_filename)
+        ocr_data = (doc.upload_metadata or {}).get("ocr_extraction") if isinstance(doc.upload_metadata, dict) else None
         doc_responses.append(DocumentResponse(
             id=doc.id,
             fdr_id=doc.fdr_id,
@@ -41,7 +42,8 @@ def _enrich_fdr(fdr: FDRRecord, db: Session) -> FDRResponse:
             file_type=doc.file_type,
             file_size=doc.file_size,
             created_at=doc.created_at,
-            download_url=url
+            download_url=url,
+            ocr_extraction=ocr_data
         ))
 
     ver_responses = []

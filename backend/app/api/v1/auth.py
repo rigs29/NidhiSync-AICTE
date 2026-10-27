@@ -241,7 +241,15 @@ def _issue_token(user: User, db: Session) -> dict:
 @router.post("/login", response_model=Token)
 def login(login_data: UserLogin, db: Session = Depends(get_db)):
     email_clean = str(login_data.email).strip().lower()
-    user = db.query(User).filter(User.email == email_clean).first()
+    try:
+        user = db.query(User).filter(User.email == email_clean).first()
+    except Exception:
+        from app.db.init_db import init_db
+        try:
+            init_db(db)
+            user = db.query(User).filter(User.email == email_clean).first()
+        except Exception:
+            user = None
     
     if not user or not verify_password(login_data.password, user.password_hash):
         log_audit(db, action="LOGIN_FAILED", entity_type="User", entity_id=email_clean, result="FAILURE")

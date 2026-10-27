@@ -89,7 +89,37 @@ def get_current_user(
     except JWTError:
         raise credentials_exception
         
-    user = db.query(User).filter(User.email == token_data.email).first()
+    try:
+        user = db.query(User).filter(User.email == token_data.email).first()
+    except Exception:
+        user = None
+
+    if user is None:
+        # Resilient serverless handling: if newly initialized SQLite DB on cold-start
+        from app.db.init_db import init_db
+        try:
+            init_db(db)
+            user = db.query(User).filter(User.email == token_data.email).first()
+        except Exception:
+            pass
+
+        if user is None and token_data.email:
+            try:
+                user = User(
+                    email=token_data.email,
+                    name=payload.get("name", token_data.email.split("@")[0]),
+                    role=token_data.role or "COLLEGE_USER",
+                    institution_id=token_data.institution_id,
+                    hashed_password="[MIGRATED_SESSION]",
+                    is_active=True,
+                )
+                db.add(user)
+                db.commit()
+                db.refresh(user)
+            except Exception:
+                db.rollback()
+                user = db.query(User).filter(User.email == token_data.email).first()
+
     if user is None or not user.is_active:
         raise credentials_exception
     return user

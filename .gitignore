@@ -26,8 +26,10 @@ dist/
 .env.local
 .env.*.local
 
-# Uploads
-backend/uploads/*
+# Uploads: ignore dynamic uploaded files, but track sample, benchmark, and seed receipts
+backend/uploads/fdr_*
+!backend/uploads/KIE-GT-*.pdf
+!backend/uploads/*_Deposit_Receipt.pdf
 !backend/uploads/sample_fdr_receipt.pdf
 
 # Testing
