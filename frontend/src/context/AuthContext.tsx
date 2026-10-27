@@ -1,14 +1,18 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User, UserRole, AuthResponse } from '../types';
+import { User, Role, TokenResponse, DemoPersona, SignupRequest, SignupResponse } from '../types';
 import { api } from '../services/api';
 
 interface AuthContextType {
   user: User | null;
-  role: UserRole | null;
+  role: Role | null;
   token: string | null;
+  isAuthenticated: boolean;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
-  loginAsDemo: (role: UserRole) => Promise<void>;
+  signup: (data: SignupRequest) => Promise<SignupResponse>;
+  verifyOtp: (email: string, otp: string) => Promise<void>;
+  resendOtp: (email: string) => Promise<SignupResponse>;
+  loginAsPersona: (persona: DemoPersona) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -23,54 +27,74 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('aicte_token'));
   const [isLoading, setIsLoading] = useState<boolean>(true);
 
-  const refreshUser = async () => {
-    if (!localStorage.getItem('aicte_token')) {
-      setUser(null);
-      setIsLoading(false);
-      return;
-    }
-    try {
-      const u = await api.get<User>('/auth/me');
-      setUser(u);
-      localStorage.setItem('aicte_user', JSON.stringify(u));
-    } catch {
-      setUser(null);
-      localStorage.removeItem('aicte_token');
-      localStorage.removeItem('aicte_user');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    refreshUser();
-  }, []);
-
-  const login = async (email: string, password: string) => {
-    const data = await api.post<AuthResponse>('/auth/login', { email, password });
+  const saveAuthSession = (data: TokenResponse) => {
     localStorage.setItem('aicte_token', data.access_token);
-    setToken(data.access_token);
-    const u: User = {
-      id: 0, // will be refreshed by /auth/me
+    const userData: User = {
+      id: 0, // Enriched on /me call
       name: data.name,
       email: data.email,
       role: data.role,
       institution_id: data.institution_id,
       institution_name: data.institution_name,
       is_active: true,
-      created_at: new Date().toISOString(),
     };
-    setUser(u);
-    localStorage.setItem('aicte_user', JSON.stringify(u));
+    localStorage.setItem('aicte_user', JSON.stringify(userData));
+    setToken(data.access_token);
+    setUser(userData);
+  };
+
+  const refreshUser = async () => {
+    try {
+      const me = await api.get<User>('/auth/me');
+      setUser(me);
+      localStorage.setItem('aicte_user', JSON.stringify(me));
+    } catch (err) {
+      console.error('Failed to sync user profile:', err);
+    }
+  };
+
+  useEffect(() => {
+    const initAuth = async () => {
+      const storedToken = localStorage.getItem('aicte_token');
+      if (storedToken) {
+        try {
+          const me = await api.get<User>('/auth/me');
+          setUser(me);
+          localStorage.setItem('aicte_user', JSON.stringify(me));
+        } catch {
+          localStorage.removeItem('aicte_token');
+          localStorage.removeItem('aicte_user');
+          setToken(null);
+          setUser(null);
+        }
+      }
+      setIsLoading(false);
+    };
+    initAuth();
+  }, []);
+
+  const login = async (email: string, password: string) => {
+    const res = await api.post<TokenResponse>('/auth/login', { email, password });
+    saveAuthSession(res);
     await refreshUser();
   };
 
-  const loginAsDemo = async (targetRole: UserRole) => {
-    let email = 'college@demo.aicte.gov.in';
-    if (targetRole === 'AICTE_OFFICER') email = 'officer@demo.aicte.gov.in';
-    if (targetRole === 'ADMIN') email = 'admin@demo.aicte.gov.in';
+  const signup = async (data: SignupRequest): Promise<SignupResponse> => {
+    return await api.post<SignupResponse>('/auth/signup', data);
+  };
 
-    await login(email, 'Demo@12345');
+  const verifyOtp = async (email: string, otp: string) => {
+    const res = await api.post<TokenResponse>('/auth/verify-otp', { email, otp });
+    saveAuthSession(res);
+    await refreshUser();
+  };
+
+  const resendOtp = async (email: string): Promise<SignupResponse> => {
+    return await api.post<SignupResponse>('/auth/resend-otp', { email });
+  };
+
+  const loginAsPersona = async (persona: DemoPersona) => {
+    await login(persona.email, persona.password);
   };
 
   const logout = () => {
@@ -85,11 +109,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     <AuthContext.Provider
       value={{
         user,
-        role: user ? user.role : null,
+        role: user?.role || null,
         token,
+        isAuthenticated: !!token,
         isLoading,
         login,
-        loginAsDemo,
+        signup,
+        verifyOtp,
+        resendOtp,
+        loginAsPersona,
         logout,
         refreshUser,
       }}
@@ -106,3 +134,4 @@ export const useAuth = () => {
   }
   return context;
 };
+

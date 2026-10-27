@@ -1,63 +1,45 @@
 import React from 'react';
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { DashboardLayout } from '../layouts/DashboardLayout';
+import { LoadingSpinner } from '../components/common/LoadingSpinner';
 
+// Pages
 import { LoginPage } from '../pages/LoginPage';
-import { CollegeDashboardPage } from '../pages/CollegeDashboardPage';
-import { OfficerDashboardPage } from '../pages/OfficerDashboardPage';
-import { AdminDashboardPage } from '../pages/AdminDashboardPage';
-import { FDRListPage } from '../pages/FDRListPage';
-import { FDRDetailsPage } from '../pages/FDRDetailsPage';
+import { DashboardPage } from '../pages/DashboardPage';
+import { FDRRepositoryPage } from '../pages/FDRRepositoryPage';
 import { NewFDRPage } from '../pages/NewFDRPage';
-import { FDRReviewPage } from '../pages/FDRReviewPage';
-import { RenewalsPage } from '../pages/RenewalsPage';
+import { FDRDetailsPage } from '../pages/FDRDetailsPage';
+import { OcrWorkspacePage } from '../pages/OcrWorkspacePage';
+import { VerificationScrutinyPage } from '../pages/VerificationScrutinyPage';
+import { RenewalsMaturityPage } from '../pages/RenewalsMaturityPage';
 import { ReleasesPage } from '../pages/ReleasesPage';
-import { InstitutionProfilePage } from '../pages/InstitutionProfilePage';
 import { NotificationsPage } from '../pages/NotificationsPage';
-import { ReportsPage } from '../pages/ReportsPage';
-import { UsersPage } from '../pages/UsersPage';
-import { AuditLogsPage } from '../pages/AuditLogsPage';
-import { SettingsPage } from '../pages/SettingsPage';
+import { AuditTrailPage } from '../pages/AuditTrailPage';
+import { ReportsAnalyticsPage } from '../pages/ReportsAnalyticsPage';
+import { UserManagementPage } from '../pages/UserManagementPage';
+import { InstitutionManagementPage } from '../pages/InstitutionManagementPage';
+import { ProfileSettingsPage } from '../pages/ProfileSettingsPage';
 
-// Protected Route Component
 const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({
   children,
   allowedRoles,
 }) => {
-  const { user, role, isLoading } = useAuth();
-  const location = useLocation();
+  const { isAuthenticated, isLoading, role } = useAuth();
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50">
-        <div className="h-8 w-8 border-4 border-aicte-navy-800 border-t-transparent rounded-full animate-spin" />
-      </div>
-    );
+    return <LoadingSpinner message="Verifying security credentials..." fullPage />;
   }
 
-  if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />;
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
   }
 
   if (allowedRoles && role && !allowedRoles.includes(role)) {
-    // If not allowed, redirect to user's appropriate default dashboard
-    if (role === 'COLLEGE_USER') return <Navigate to="/college/dashboard" replace />;
-    if (role === 'AICTE_OFFICER') return <Navigate to="/officer/dashboard" replace />;
-    return <Navigate to="/admin/dashboard" replace />;
+    return <Navigate to="/dashboard" replace />;
   }
 
   return <>{children}</>;
-};
-
-// Root index redirect based on role
-const RootRedirect: React.FC = () => {
-  const { user, role, isLoading } = useAuth();
-  if (isLoading) return null;
-  if (!user) return <Navigate to="/login" replace />;
-  if (role === 'COLLEGE_USER') return <Navigate to="/college/dashboard" replace />;
-  if (role === 'AICTE_OFFICER') return <Navigate to="/officer/dashboard" replace />;
-  return <Navigate to="/admin/dashboard" replace />;
 };
 
 export const AppRoutes: React.FC = () => {
@@ -65,60 +47,63 @@ export const AppRoutes: React.FC = () => {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
 
-      {/* Authenticated Dashboard Routes */}
+      {/* Protected Dashboard Layout */}
       <Route
+        path="/"
         element={
           <ProtectedRoute>
             <DashboardLayout />
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<RootRedirect />} />
+        <Route index element={<Navigate to="/dashboard" replace />} />
+        <Route path="dashboard" element={<DashboardPage />} />
+        <Route path="fdrs" element={<FDRRepositoryPage />} />
+        <Route path="fdrs/new" element={<NewFDRPage />} />
+        <Route path="fdrs/:id" element={<FDRDetailsPage />} />
         
-        {/* Dashboards */}
-        <Route path="/college/dashboard" element={<CollegeDashboardPage />} />
-        <Route path="/officer/dashboard" element={<OfficerDashboardPage />} />
-        <Route path="/admin/dashboard" element={<AdminDashboardPage />} />
+        {/* Core AI Flagship Route */}
+        <Route path="ocr-workspace" element={<OcrWorkspacePage />} />
 
-        {/* FDR Management */}
-        <Route path="/fdrs" element={<FDRListPage />} />
-        <Route path="/fdrs/new" element={<NewFDRPage />} />
-        <Route path="/fdrs/:id" element={<FDRDetailsPage />} />
-        <Route path="/officer/queue" element={<FDRListPage />} />
-        <Route path="/officer/review/:id" element={<FDRReviewPage />} />
-
-        {/* Workflows */}
-        <Route path="/renewals" element={<RenewalsPage />} />
-        <Route path="/releases" element={<ReleasesPage />} />
-        <Route path="/institution/profile" element={<InstitutionProfilePage />} />
-        <Route path="/institutions/:id" element={<InstitutionProfilePage />} />
-
-        {/* Common Modules */}
-        <Route path="/notifications" element={<NotificationsPage />} />
-        <Route path="/reports" element={<ReportsPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-
-        {/* Admin Modules */}
+        {/* Scrutiny Queue for Officers & Admins */}
         <Route
-          path="/admin/users"
+          path="scrutiny-queue"
+          element={
+            <ProtectedRoute allowedRoles={['AICTE_OFFICER', 'ADMIN']}>
+              <VerificationScrutinyPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route path="renewals" element={<RenewalsMaturityPage />} />
+        <Route path="releases" element={<ReleasesPage />} />
+        <Route path="notifications" element={<NotificationsPage />} />
+        <Route path="reports" element={<ReportsAnalyticsPage />} />
+        <Route path="institutions" element={<InstitutionManagementPage />} />
+        
+        {/* Admin and Officer routes */}
+        <Route
+          path="audit-trail"
+          element={
+            <ProtectedRoute allowedRoles={['AICTE_OFFICER', 'ADMIN']}>
+              <AuditTrailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="users"
           element={
             <ProtectedRoute allowedRoles={['ADMIN']}>
-              <UsersPage />
+              <UserManagementPage />
             </ProtectedRoute>
           }
         />
-        <Route
-          path="/admin/audit"
-          element={
-            <ProtectedRoute allowedRoles={['ADMIN', 'AICTE_OFFICER']}>
-              <AuditLogsPage />
-            </ProtectedRoute>
-          }
-        />
+
+        <Route path="settings" element={<ProfileSettingsPage />} />
       </Route>
 
-      {/* Catch-all */}
-      <Route path="*" element={<Navigate to="/" replace />} />
+      <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>
   );
 };
+

@@ -6,7 +6,6 @@ const getApiBase = () => {
     }
     return envUrl.endsWith('/api/v1') ? envUrl : `${envUrl.replace(/\/+$/, '')}/api/v1`;
   }
-  // Smart cloud fallback when hosted on Render or Vercel
   if (
     typeof window !== 'undefined' && 
     (window.location.hostname.includes('.onrender.com') || window.location.hostname.includes('.vercel.app'))
@@ -20,6 +19,9 @@ export const API_BASE = getApiBase();
 
 export const getDownloadUrl = (pathOrKey: string, directUrl?: string | null) => {
   if (directUrl && directUrl.startsWith('http')) {
+    if (typeof window !== 'undefined' && directUrl.includes('localhost:8000') && window.location.hostname !== 'localhost') {
+      return directUrl.replace('localhost:8000', `${window.location.hostname}:8000`);
+    }
     return directUrl;
   }
   const cleanKey = pathOrKey.replace(/^\/+/, '');
@@ -29,6 +31,43 @@ export const getDownloadUrl = (pathOrKey: string, directUrl?: string | null) => 
     return `${API_BASE.replace(/\/api\/v1\/?$/, '')}/${cleanKey}${tokenParam}`;
   }
   return `${API_BASE}/documents/download/${cleanKey}${tokenParam}`;
+};
+
+export const fetchDocumentBlob = async (pathOrKey: string, directUrl?: string | null): Promise<Blob> => {
+  const token = localStorage.getItem('aicte_token');
+  const headers = new Headers();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  let targetUrl: string;
+  if (directUrl && directUrl.startsWith('http')) {
+    targetUrl = directUrl;
+    if (typeof window !== 'undefined' && targetUrl.includes('localhost:8000') && window.location.hostname !== 'localhost') {
+      targetUrl = targetUrl.replace('localhost:8000', `${window.location.hostname}:8000`);
+    }
+  } else {
+    const cleanKey = pathOrKey.replace(/^\/+/, '');
+    if (cleanKey.startsWith('api/v1/')) {
+      targetUrl = `${API_BASE.replace(/\/api\/v1\/?$/, '')}/${cleanKey}`;
+    } else {
+      targetUrl = `${API_BASE}/documents/download/${encodeURIComponent(cleanKey)}`;
+    }
+  }
+
+  const response = await fetch(targetUrl, { headers });
+  if (!response.ok) {
+    let errorDetail = `Document retrieval failed (${response.status})`;
+    try {
+      const errJson = await response.json();
+      errorDetail = errJson.detail || errJson.message || errorDetail;
+    } catch {
+      // not json
+    }
+    throw new ApiError(errorDetail, response.status);
+  }
+
+  return await response.blob();
 };
 
 export class ApiError extends Error {
@@ -53,10 +92,19 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(`${API_BASE}${endpoint}`, {
-    ...options,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${endpoint}`, {
+      ...options,
+      headers,
+    });
+  } catch (err: any) {
+    if (err instanceof ApiError) throw err;
+    if (err?.name === 'TypeError' && (err?.message === 'Failed to fetch' || err?.message?.includes('fetch'))) {
+      throw new ApiError('Unable to connect to the authentication server. Please check your network or backend connection.', 0);
+    }
+    throw new ApiError(err?.message || 'Network request failed', 0);
+  }
 
   if (response.status === 401) {
     let errorDetail = 'Authentication failed.';
@@ -67,7 +115,7 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       // response is not json
     }
 
-    if (endpoint.includes('/auth/')) {
+    if (endpoint.includes('/auth/login')) {
       throw new ApiError(errorDetail, 401);
     }
 
@@ -116,3 +164,4 @@ export const api = {
       body: formData,
     }),
 };
+

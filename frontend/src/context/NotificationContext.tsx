@@ -1,13 +1,13 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { NotificationItem } from '../types';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { NotificationRecord } from '../types';
 import { api } from '../services/api';
 import { useAuth } from './AuthContext';
 
 interface NotificationContextType {
-  notifications: NotificationItem[];
+  notifications: NotificationRecord[];
   unreadCount: number;
   isLoading: boolean;
-  refreshNotifications: () => Promise<void>;
+  fetchNotifications: () => Promise<void>;
   markAsRead: (id: number) => Promise<void>;
   markAllAsRead: () => Promise<void>;
 }
@@ -15,56 +15,54 @@ interface NotificationContextType {
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
 
 export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user } = useAuth();
-  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const { isAuthenticated } = useAuth();
+  const [notifications, setNotifications] = useState<NotificationRecord[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const refreshNotifications = async () => {
-    if (!user) {
-      setNotifications([]);
-      return;
-    }
+  const fetchNotifications = useCallback(async () => {
+    if (!isAuthenticated) return;
     try {
       setIsLoading(true);
-      const data = await api.get<NotificationItem[]>('/notifications');
-      setNotifications(data);
-    } catch (e) {
-      console.error('Error fetching notifications:', e);
+      const data = await api.get<NotificationRecord[]>('/notifications');
+      setNotifications(data || []);
+    } catch (err) {
+      console.error('Failed to load notifications:', err);
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [isAuthenticated]);
 
   useEffect(() => {
-    if (user) {
-      refreshNotifications();
-      // Poll every 30 seconds for live alert updates
-      const interval = setInterval(refreshNotifications, 30000);
+    if (isAuthenticated) {
+      fetchNotifications();
+      const interval = setInterval(fetchNotifications, 60000);
       return () => clearInterval(interval);
+    } else {
+      setNotifications([]);
     }
-  }, [user]);
+  }, [isAuthenticated, fetchNotifications]);
 
   const markAsRead = async (id: number) => {
     try {
       await api.put(`/notifications/${id}/read`);
-      setNotifications((prev) =>
-        prev.map((n) => (n.id === id ? { ...n, is_read: true } : n))
+      setNotifications(prev =>
+        prev.map(n => (n.id === id ? { ...n, is_read: true } : n))
       );
-    } catch (e) {
-      console.error('Error marking notification read:', e);
+    } catch (err) {
+      console.error('Failed to mark notification read:', err);
     }
   };
 
   const markAllAsRead = async () => {
     try {
       await api.put('/notifications/read-all');
-      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    } catch (e) {
-      console.error('Error marking all notifications read:', e);
+      setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    } catch (err) {
+      console.error('Failed to mark all notifications read:', err);
     }
   };
 
-  const unreadCount = notifications.filter((n) => !n.is_read).length;
+  const unreadCount = notifications.filter(n => !n.is_read).length;
 
   return (
     <NotificationContext.Provider
@@ -72,7 +70,7 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         notifications,
         unreadCount,
         isLoading,
-        refreshNotifications,
+        fetchNotifications,
         markAsRead,
         markAllAsRead,
       }}
@@ -89,3 +87,4 @@ export const useNotifications = () => {
   }
   return context;
 };
+

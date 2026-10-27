@@ -1,229 +1,241 @@
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, Link } from 'react-router-dom';
 import {
-  ArrowUpRight,
-  PlusCircle,
-  FileText,
-  Building2,
-  Calendar,
-  AlertCircle,
+  HandCoins,
+  ShieldCheck,
   CheckCircle2,
   Clock,
-  ShieldCheck,
-  CheckSquare
+  AlertTriangle,
+  XCircle,
+  PlusCircle,
+  Building2,
+  FileCheck2,
+  ArrowRight
 } from 'lucide-react';
 import { api } from '../services/api';
-import { useAuth } from '../context/AuthContext';
 import { ReleaseRequest, FDRRecord } from '../types';
 import { StatusBadge } from '../components/common/Badge';
+import { LoadingSpinner } from '../components/common/LoadingSpinner';
+import { EmptyState } from '../components/common/EmptyState';
+import { Modal } from '../components/common/Modal';
+import { useAuth } from '../context/AuthContext';
 
 export const ReleasesPage: React.FC = () => {
-  const { role } = useAuth();
   const [searchParams] = useSearchParams();
-  const preselectedFdrId = searchParams.get('fdr_id');
+  const { role, user } = useAuth();
+  const isOfficerOrAdmin = role === 'AICTE_OFFICER' || role === 'ADMIN';
 
   const [requests, setRequests] = useState<ReleaseRequest[]>([]);
-  const [eligibleFdrs, setEligibleFdrs] = useState<FDRRecord[]>([]);
-  const [showModal, setShowModal] = useState(!!preselectedFdrId);
-
-  // Form
-  const [fdrId, setFdrId] = useState<string>(preselectedFdrId || '');
-  const [reason, setReason] = useState('');
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  // Officer review modal
-  const [reviewModalReq, setReviewModalReq] = useState<ReleaseRequest | null>(null);
-  const [reviewStatus, setReviewStatus] = useState<string>('APPROVED');
-  const [reviewRemarks, setReviewRemarks] = useState<string>('');
+  const [fdrs, setFdrs] = useState<FDRRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchReleaseData = async () => {
+  // College Request Modal
+  const [isRequestModalOpen, setIsRequestModalOpen] = useState(false);
+  const [selectedFdrId, setSelectedFdrId] = useState<number | ''>(
+    searchParams.get('fdr_id') ? Number(searchParams.get('fdr_id')) : ''
+  );
+  const [releaseReason, setReleaseReason] = useState('');
+  const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  const [requestError, setRequestError] = useState<string | null>(null);
+
+  // Officer Review Modal
+  const [reviewModalRequest, setReviewModalRequest] = useState<ReleaseRequest | null>(null);
+  const [reviewStatus, setReviewStatus] = useState<string>('APPROVED');
+  const [reviewRemarks, setReviewRemarks] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+  const [reviewError, setReviewError] = useState<string | null>(null);
+
+  const fetchReleases = async () => {
+    setIsLoading(true);
     try {
-      setIsLoading(true);
-      const [reqData, fdrData] = await Promise.all([
+      const [relList, fdrList] = await Promise.all([
         api.get<ReleaseRequest[]>('/releases'),
-        api.get<FDRRecord[]>('/fdrs')
+        api.get<FDRRecord[]>('/fdrs?limit=100'),
       ]);
-      setRequests(reqData);
-      setEligibleFdrs(fdrData);
+      setRequests(relList || []);
+      setFdrs(fdrList || []);
     } catch (err) {
-      console.error('Error fetching release requests:', err);
+      console.error('Failed to load release requests:', err);
     } finally {
       setIsLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchReleaseData();
-  }, []);
+    fetchReleases();
+    if (searchParams.get('fdr_id')) {
+      setIsRequestModalOpen(true);
+    }
+  }, [searchParams]);
 
-  const handleSubmitRequest = async (e: React.FormEvent) => {
+  const handleCreateRequest = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!fdrId) {
-      setError('Please select an FDR record to request release for.');
+    if (!selectedFdrId) {
+      setRequestError('Please select the FDR instrument to release.');
       return;
     }
-    if (reason.trim().length < 10) {
-      setError('Please provide a substantive justification (at least 10 characters).');
+    if (releaseReason.trim().length < 10) {
+      setRequestError('Release reason must be at least 10 characters.');
       return;
     }
 
-    setIsSubmitting(true);
-    setError(null);
+    setIsSubmittingRequest(true);
+    setRequestError(null);
     try {
       await api.post('/releases', {
-        fdr_id: parseInt(fdrId),
-        reason: reason.trim(),
+        fdr_id: Number(selectedFdrId),
+        reason: releaseReason.trim(),
       });
-      setShowModal(false);
-      setReason('');
-      setFdrId('');
-      await fetchReleaseData();
+      setIsRequestModalOpen(false);
+      setReleaseReason('');
+      fetchReleases();
     } catch (err: any) {
-      setError(err.message || 'Failed to submit release request');
+      setRequestError(err.message || 'Failed to submit release request.');
     } finally {
-      setIsSubmitting(false);
+      setIsSubmittingRequest(false);
     }
   };
 
   const handleReviewSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!reviewModalReq) return;
+    if (!reviewModalRequest) return;
     if (reviewRemarks.trim().length < 5) {
-      setError('Mandatory review remarks required (at least 5 characters).');
+      setReviewError('Review remarks must be at least 5 characters.');
       return;
     }
 
-    setIsSubmitting(true);
-    setError(null);
+    setIsSubmittingReview(true);
+    setReviewError(null);
     try {
-      await api.put(`/releases/${reviewModalReq.id}/review`, {
+      await api.put(`/releases/${reviewModalRequest.id}/review`, {
         status: reviewStatus,
         remarks: reviewRemarks.trim(),
       });
-      setReviewModalReq(null);
+      setReviewModalRequest(null);
       setReviewRemarks('');
-      await fetchReleaseData();
+      fetchReleases();
     } catch (err: any) {
-      setError(err.message || 'Failed to update release request');
+      setReviewError(err.message || 'Failed to submit officer decision.');
     } finally {
-      setIsSubmitting(false);
+      setIsSubmittingReview(false);
     }
   };
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white rounded-2xl p-6 border border-slate-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <div className="flex items-center gap-2 text-xs font-semibold text-teal-700 uppercase tracking-wider mb-1">
-            <ArrowUpRight className="h-4 w-4" />
-            <span>Authorized Release & Refund Workflow</span>
+          <div className="flex items-center gap-2 text-xs font-bold text-gov-navy-800 uppercase tracking-wider mb-1">
+            <HandCoins className="h-4 w-4 text-gov-teal-600" />
+            <span>AICTE Statutory Lien Release Workflow</span>
           </div>
-          <h1 className="text-xl font-bold text-slate-900">Security Deposit Release / Refund Requests</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Process official administrative release upon statutory completion of mandatory program tenure.
+          <h1 className="text-xl sm:text-2xl font-black text-gov-navy-950">
+            Release & Refund Management
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">
+            Formal administrative applications to release FDR security liens upon institutional closure or completion of mandatory lock-in terms.
           </p>
         </div>
 
         {role === 'COLLEGE_USER' && (
           <button
-            onClick={() => setShowModal(true)}
-            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg bg-teal-800 hover:bg-teal-700 text-white text-xs font-semibold shadow-sm transition-all"
+            onClick={() => {
+              setRequestError(null);
+              setIsRequestModalOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold bg-gov-navy-900 text-white hover:bg-gov-navy-800 transition-colors shadow-sm"
           >
             <PlusCircle className="h-4 w-4" />
-            <span>Request Deposit Release</span>
+            <span>Apply for Lien Release</span>
           </button>
         )}
       </div>
 
-      {/* Statutory Disclaimer Box */}
-      <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-200 flex items-start gap-3 text-xs text-amber-900">
-        <ShieldCheck className="h-4 w-4 text-amber-700 shrink-0 mt-0.5" />
-        <div>
-          <span className="font-bold">Statutory Note on Release Approvals:</span> Approval in this portal records AICTE administrative authorization to release lien. It does not execute electronic fund transfers or financial banking operations directly.
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        {isLoading ? (
-          <div className="p-12 text-center text-slate-500 text-xs">Loading Release Requests...</div>
-        ) : requests.length === 0 ? (
-          <div className="p-12 text-center text-slate-500 text-xs space-y-2">
-            <ArrowUpRight className="h-8 w-8 text-slate-400 mx-auto" />
-            <p className="font-semibold text-slate-700">No Release Requests Found</p>
-            <p className="text-slate-400">Applications for deposit closure or lien release will appear here.</p>
+      {/* Requests Table */}
+      <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+          <div className="flex items-center gap-2">
+            <HandCoins className="h-4 w-4 text-gov-navy-900" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900">
+              Release Request Dockets ({requests.length})
+            </h3>
           </div>
+        </div>
+
+        {isLoading ? (
+          <LoadingSpinner message="Retrieving release petitions..." />
+        ) : requests.length === 0 ? (
+          <EmptyState
+            title="No Release Requests Found"
+            description="There are currently no active release or refund requests in the system."
+            actionText={role === 'COLLEGE_USER' ? 'Apply for Release' : undefined}
+            onAction={role === 'COLLEGE_USER' ? () => setIsRequestModalOpen(true) : undefined}
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-slate-600 border-b border-slate-200">
-                <tr>
-                  <th className="py-3 px-4 font-semibold">FDR Ref #</th>
-                  {role !== 'COLLEGE_USER' && (
-                    <th className="py-3 px-4 font-semibold">Institution</th>
-                  )}
-                  <th className="py-3 px-4 font-semibold">Amount</th>
-                  <th className="py-3 px-4 font-semibold">Reason</th>
-                  <th className="py-3 px-4 font-semibold">Status</th>
-                  <th className="py-3 px-4 font-semibold">Decision Remarks</th>
-                  <th className="py-3 px-4 font-semibold text-right">Actions</th>
+              <thead>
+                <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
+                  <th className="py-3 px-4">FDR Instrument</th>
+                  <th className="py-3 px-4">Institution Name</th>
+                  <th className="py-3 px-4">Amount</th>
+                  <th className="py-3 px-4">Application Reason</th>
+                  <th className="py-3 px-4">Status</th>
+                  <th className="py-3 px-4">Officer Remarks</th>
+                  {isOfficerOrAdmin && <th className="py-3 px-4 text-right">Review Action</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {requests.map((r) => (
-                  <tr key={r.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3 px-4">
-                      <div className="font-bold text-slate-900">{r.fdr_number}</div>
-                      <div className="text-[10px] text-slate-400">Request #{r.id}</div>
+                {requests.map(req => (
+                  <tr key={req.id} className="hover:bg-slate-50/80 transition-colors">
+                    <td className="py-3.5 px-4 font-mono font-bold text-gov-navy-950">
+                      <Link to={`/fdrs/${req.fdr_id}`} className="hover:underline">
+                        {req.fdr_number || `#${req.fdr_id}`}
+                      </Link>
                     </td>
 
-                    {role !== 'COLLEGE_USER' && (
-                      <td className="py-3 px-4 font-medium text-slate-800">
-                        {r.institution_name}
-                      </td>
-                    )}
-
-                    <td className="py-3 px-4 font-bold text-slate-900">
-                      ₹{(r.amount || 0).toLocaleString('en-IN')}
+                    <td className="py-3.5 px-4 font-semibold text-slate-900">
+                      {req.institution_name}
                     </td>
 
-                    <td className="py-3 px-4 text-slate-600 max-w-xs truncate">
-                      {r.reason}
+                    <td className="py-3.5 px-4 font-mono font-bold text-slate-900">
+                      {req.amount ? `₹${req.amount.toLocaleString('en-IN')}` : 'N/A'}
                     </td>
 
-                    <td className="py-3 px-4">
-                      <StatusBadge status={r.status} />
+                    <td className="py-3.5 px-4 text-slate-600 max-w-xs truncate" title={req.reason}>
+                      {req.reason}
                     </td>
 
-                    <td className="py-3 px-4 text-slate-600 max-w-xs truncate">
-                      {r.remarks || 'Pending review'}
+                    <td className="py-3.5 px-4">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${
+                        req.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-800 border-emerald-300' :
+                        req.status === 'REJECTED' ? 'bg-red-50 text-red-800 border-red-300' :
+                        'bg-amber-50 text-amber-900 border-amber-300'
+                      }`}>
+                        {req.status}
+                      </span>
                     </td>
 
-                    <td className="py-3 px-4 text-right">
-                      {(role === 'AICTE_OFFICER' || role === 'ADMIN') && r.status === 'SUBMITTED' ? (
+                    <td className="py-3.5 px-4 text-slate-500 max-w-xs truncate">
+                      {req.remarks || 'Pending decision'}
+                    </td>
+
+                    {isOfficerOrAdmin && (
+                      <td className="py-3.5 px-4 text-right">
                         <button
                           onClick={() => {
-                            setReviewModalReq(r);
-                            setReviewStatus('APPROVED');
-                            setReviewRemarks('');
+                            setReviewModalRequest(req);
+                            setReviewStatus(req.status === 'SUBMITTED' ? 'APPROVED' : req.status);
+                            setReviewRemarks(req.remarks || '');
+                            setReviewError(null);
                           }}
-                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-teal-800 text-white font-semibold text-xs hover:bg-teal-700 shadow-sm"
+                          className="px-3 py-1.5 rounded-lg bg-gov-navy-900 text-white hover:bg-gov-navy-800 text-xs font-bold transition-colors shadow-2xs"
                         >
-                          <CheckSquare className="h-3 w-3" />
-                          <span>Review</span>
+                          Scrutinize
                         </button>
-                      ) : (
-                        <Link
-                          to={`/fdrs/${r.fdr_id}`}
-                          className="text-xs text-aicte-navy-700 font-semibold hover:underline"
-                        >
-                          View FDR
-                        </Link>
-                      )}
-                    </td>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -232,130 +244,143 @@ export const ReleasesPage: React.FC = () => {
         )}
       </div>
 
-      {/* College Submit Release Modal */}
-      {showModal && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="text-sm font-bold text-slate-900">Submit Security Deposit Release Request</h3>
-              <button onClick={() => setShowModal(false)} className="text-slate-400 hover:text-slate-600 text-lg font-bold">×</button>
+      {/* College Release Request Modal */}
+      <Modal
+        isOpen={isRequestModalOpen}
+        onClose={() => setIsRequestModalOpen(false)}
+        title="Apply for AICTE Security Deposit Lien Release"
+        subtitle="Requires formal justification under Approval Process Regulations"
+      >
+        <form onSubmit={handleCreateRequest} className="space-y-4">
+          {requestError && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800">
+              {requestError}
             </div>
+          )}
 
-            {error && (
-              <div className="p-3 bg-red-50 text-red-800 rounded-lg text-xs">{error}</div>
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              Select FDR Instrument to Release *
+            </label>
+            <select
+              value={selectedFdrId}
+              onChange={e => setSelectedFdrId(Number(e.target.value))}
+              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-medium focus:ring-2 focus:ring-gov-navy-900 focus:outline-none"
+              required
+            >
+              <option value="">-- Choose FDR Record --</option>
+              {fdrs.map(f => (
+                <option key={f.id} value={f.id}>
+                  {f.fdr_number} — {f.bank_name} (₹{f.amount.toLocaleString('en-IN')})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1">
+              Statutory Justification / Closure Reason * (Min 10 characters)
+            </label>
+            <textarea
+              rows={4}
+              value={releaseReason}
+              onChange={e => setReleaseReason(e.target.value)}
+              placeholder="Detail the justification, e.g. 'Completion of mandatory 10-year lock-in term for Autonomous Technical Institute with zero outstanding student or council dues.'"
+              className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-medium focus:ring-2 focus:ring-gov-navy-900 focus:outline-none"
+              required
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+            <button
+              type="button"
+              onClick={() => setIsRequestModalOpen(false)}
+              className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmittingRequest}
+              className="px-5 py-2 text-xs font-bold rounded-xl bg-gov-navy-900 text-white hover:bg-gov-navy-800 transition-colors shadow-sm disabled:opacity-50"
+            >
+              {isSubmittingRequest ? 'Submitting Petition...' : 'Submit Release Application'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Officer Scrutiny Review Modal */}
+      {reviewModalRequest && (
+        <Modal
+          isOpen={true}
+          onClose={() => setReviewModalRequest(null)}
+          title={`Review Release Request: FDR ${reviewModalRequest.fdr_number}`}
+          subtitle={`Applicant: ${reviewModalRequest.institution_name}`}
+        >
+          <form onSubmit={handleReviewSubmit} className="space-y-4">
+            {reviewError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800">
+                {reviewError}
+              </div>
             )}
 
-            <form onSubmit={handleSubmitRequest} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Select FDR for Release *</label>
-                <select
-                  value={fdrId}
-                  onChange={(e) => setFdrId(e.target.value)}
-                  required
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white focus:outline-none"
-                >
-                  <option value="">-- Choose FDR Record --</option>
-                  {eligibleFdrs.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.fdr_number} (₹{f.amount.toLocaleString('en-IN')} at {f.bank_name})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Grounds / Reason for Release *</label>
-                <textarea
-                  rows={4}
-                  required
-                  placeholder="State the statutory grounds: e.g. Completion of mandatory 10-year term with zero student liabilities, or voluntary program closure..."
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:outline-none"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="px-3 py-2 border border-slate-300 rounded-lg text-slate-700 font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-4 py-2 bg-teal-800 text-white rounded-lg font-semibold hover:bg-teal-700 disabled:opacity-50"
-                >
-                  {isSubmitting ? 'Submitting...' : 'Submit Official Request'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Officer Decision Modal */}
-      {reviewModalReq && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 border border-slate-200 space-y-4">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-sm font-bold text-slate-900">Review Release Request #{reviewModalReq.id}</h3>
-                <p className="text-xs text-slate-500">{reviewModalReq.institution_name} • {reviewModalReq.fdr_number}</p>
-              </div>
-              <button onClick={() => setReviewModalReq(null)} className="text-slate-400 hover:text-slate-600 text-lg font-bold">×</button>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-1">
+              <span className="text-slate-400 font-semibold block uppercase text-[10px]">Applicant Justification</span>
+              <p className="text-slate-800 font-medium">{reviewModalRequest.reason}</p>
             </div>
 
-            {error && <div className="p-3 bg-red-50 text-red-800 rounded-lg text-xs">{error}</div>}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Release Decision Determination *
+              </label>
+              <select
+                value={reviewStatus}
+                onChange={e => setReviewStatus(e.target.value)}
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-semibold text-slate-800 focus:ring-2 focus:ring-gov-navy-900 focus:outline-none"
+              >
+                <option value="APPROVED">APPROVED — Release Authorized under Seal</option>
+                <option value="CLARIFICATION_REQUIRED">CLARIFICATION_REQUIRED — Ask College for NOC</option>
+                <option value="REJECTED">REJECTED — Statutory Lock-in Incomplete</option>
+                <option value="UNDER_REVIEW">UNDER_REVIEW — Forward to Legal Cell</option>
+                <option value="COMPLETED">COMPLETED — Lien Dissolved at Bank</option>
+              </select>
+            </div>
 
-            <form onSubmit={handleReviewSubmit} className="space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Decision Outcome *</label>
-                <select
-                  value={reviewStatus}
-                  onChange={(e) => setReviewStatus(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white font-semibold focus:outline-none"
-                >
-                  <option value="APPROVED">Approve Release (Issue Administrative Authorization)</option>
-                  <option value="CLARIFICATION_REQUIRED">Request Additional Compliance Proof</option>
-                  <option value="REJECTED">Reject Release Request</option>
-                </select>
-              </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Mandatory Scrutiny Remarks * (Min 5 characters)
+              </label>
+              <textarea
+                rows={3}
+                value={reviewRemarks}
+                onChange={e => setReviewRemarks(e.target.value)}
+                placeholder="Enter mandatory scrutiny remarks and council sanction orders..."
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-medium focus:ring-2 focus:ring-gov-navy-900 focus:outline-none"
+                required
+              />
+            </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Scrutiny Remarks *</label>
-                <textarea
-                  rows={3}
-                  required
-                  placeholder="Record formal scrutiny basis, resolution remarks or compliance requirements..."
-                  value={reviewRemarks}
-                  onChange={(e) => setReviewRemarks(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:outline-none"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setReviewModalReq(null)}
-                  className="px-3 py-2 border border-slate-300 rounded-lg text-slate-700 font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSubmitting}
-                  className="px-4 py-2 bg-teal-800 text-white rounded-lg font-semibold hover:bg-teal-700 disabled:opacity-50"
-                >
-                  {isSubmitting ? 'Recording...' : 'Commit Release Determination'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setReviewModalRequest(null)}
+                className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingReview}
+                className="px-5 py-2 text-xs font-bold rounded-xl bg-gov-navy-900 text-white hover:bg-gov-navy-800 transition-colors shadow-sm disabled:opacity-50"
+              >
+                {isSubmittingReview ? 'Recording Decision...' : 'Commit Release Determination'}
+              </button>
+            </div>
+          </form>
+        </Modal>
       )}
     </div>
   );
 };
+

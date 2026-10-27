@@ -1,7 +1,7 @@
 {
-  "name": "aicte-fdr-frontend",
+  "name": "nidhisync-aicte-skynex",
   "private": true,
-  "version": "1.0.0",
+  "version": "2.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -9,16 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@hookform/resolvers": "^3.9.0",
     "clsx": "^2.1.1",
     "lucide-react": "^0.453.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-hook-form": "^7.53.0",
     "react-router-dom": "^6.27.0",
     "recharts": "^2.13.0",
-    "tailwind-merge": "^2.5.4",
-    "zod": "^3.23.8"
+    "tailwind-merge": "^2.5.4"
   },
   "devDependencies": {
     "@types/node": "^22.7.5",
@@ -32,3 +29,4 @@
     "vite": "^5.4.9"
   }
 }
+
