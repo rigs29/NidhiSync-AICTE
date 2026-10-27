@@ -110,7 +110,7 @@ def get_current_user(
                     name=payload.get("name", token_data.email.split("@")[0]),
                     role=token_data.role or "COLLEGE_USER",
                     institution_id=token_data.institution_id,
-                    hashed_password="[MIGRATED_SESSION]",
+                    password_hash="[MIGRATED_SESSION]",
                     is_active=True,
                 )
                 db.add(user)

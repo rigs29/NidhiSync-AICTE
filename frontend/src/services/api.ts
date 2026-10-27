@@ -135,7 +135,13 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
       // response is not json
     }
 
-    if (endpoint.includes('/auth/login')) {
+    // Do not aggressively wipe token or redirect if checking /auth/me or performing auth actions
+    if (
+      endpoint.includes('/auth/login') ||
+      endpoint.includes('/auth/signup') ||
+      endpoint.includes('/auth/verify-otp') ||
+      endpoint.includes('/auth/me')
+    ) {
       throw new ApiError(errorDetail, 401);
     }
 

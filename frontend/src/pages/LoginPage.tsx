@@ -202,6 +202,15 @@ export const LoginPage: React.FC = () => {
         new_institution_code: selectedRole === 'COLLEGE_USER' && isRegisteringNewCollege ? newCollegeAicteCode.trim() : undefined,
       });
 
+      // Auto-login immediately upon successful signup and enter site!
+      try {
+        await login(cleanEmail, signupPassword);
+        navigate('/dashboard');
+        return;
+      } catch (autoLoginErr) {
+        console.warn('Auto-login after signup fallback to verify mode:', autoLoginErr);
+      }
+
       setVerifyEmail(cleanEmail);
       setLoginEmail(cleanEmail);
       setLoginPassword(signupPassword);

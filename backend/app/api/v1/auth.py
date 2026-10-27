@@ -94,7 +94,7 @@ def signup(data: UserSignup, db: Session = Depends(get_db)):
         if institution_id:
             existing_user.institution_id = institution_id
         existing_user.password_hash = get_password_hash(data.password)
-        existing_user.is_active = False # Require OTP to activate
+        existing_user.is_active = True # Active immediately
         db.commit()
         db.refresh(existing_user)
         user = existing_user
@@ -105,7 +105,7 @@ def signup(data: UserSignup, db: Session = Depends(get_db)):
             password_hash=get_password_hash(data.password),
             role=data.role,
             institution_id=institution_id,
-            is_active=False # Pending OTP verification
+            is_active=True # Active immediately for seamless access
         )
         db.add(user)
         db.commit()
@@ -259,21 +259,14 @@ def login(login_data: UserLogin, db: Session = Depends(get_db)):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
+    # If valid password was entered, ensure account is active and log user straight in
     if not user.is_active:
-        # User account unverified: issue OTP and prompt for verification
-        otp = f"{random.randint(100000, 999999)}"
-        magic_token = secrets.token_urlsafe(32)
-        OTP_CACHE[email_clean] = {
-            "otp": otp,
-            "token": magic_token,
-            "expires_at": time.time() + 900,
-            "user_id": user.id
-        }
-        print(f"\n[LOGIN PENDING OTP] User {email_clean} requires OTP: {otp}\n")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Account pending verification. OTP: {otp}"
-        )
+        user.is_active = True
+        try:
+            db.commit()
+            db.refresh(user)
+        except Exception:
+            db.rollback()
 
     log_audit(db, action="LOGIN_SUCCESS", entity_type="User", entity_id=str(user.id), actor=user)
     return _issue_token(user, db)

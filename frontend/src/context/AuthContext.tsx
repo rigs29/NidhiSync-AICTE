@@ -91,7 +91,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const login = async (email: string, password: string) => {
     const res = await api.post<TokenResponse>('/auth/login', { email, password });
     saveAuthSession(res);
-    await refreshUser();
+    // Non-blocking background sync so user enters site immediately
+    refreshUser().catch((err) => console.warn('Background profile sync note:', err));
   };
 
   const signup = async (data: SignupRequest): Promise<SignupResponse> => {
@@ -101,7 +102,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const verifyOtp = async (email: string, otp: string) => {
     const res = await api.post<TokenResponse>('/auth/verify-otp', { email, otp });
     saveAuthSession(res);
-    await refreshUser();
+    // Non-blocking background sync
+    refreshUser().catch((err) => console.warn('Background profile sync note:', err));
   };
 
   const resendOtp = async (email: string): Promise<SignupResponse> => {
