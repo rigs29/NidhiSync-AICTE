@@ -848,3 +848,20 @@ def sanitize_document_metadata(
         sanitized.pop("last_override_by", None)
         sanitized.pop("demo_seed", None)
     return sanitized
+
+def extract_fdr_fields_from_document_safe(file_bytes: Optional[bytes], filename: Optional[str]) -> Dict[str, Any]:
+    """Safety wrapper around ``extract_fdr_fields_from_document``.
+
+    Guarantees that callers never receive an unhandled exception from the OCR
+    pipeline. If any unexpected error occurs, a manual‑review extraction result
+    is returned with a clear notice.
+    """
+    try:
+        return extract_fdr_fields_from_document(file_bytes, filename)
+    except Exception as exc:  # pragma: no cover – defensive fallback
+        return _build_extraction_result(
+            status="MANUAL_REVIEW_REQUIRED",
+            source_modality="UNSUPPORTED",
+            engine="NONE",
+            notice=f"Unexpected OCR processing error ({type(exc).__name__}): {exc}",
+        )
