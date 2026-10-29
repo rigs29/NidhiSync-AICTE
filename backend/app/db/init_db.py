@@ -76,6 +76,14 @@ def init_db(db: Session):
         institution_id=inst1.id,
         is_active=True
     )
+    user_college_alias = User(
+        name="Delhi Inst. of Tech (College User)",
+        email="college@domain.edu.in",
+        password_hash=pwd,
+        role="COLLEGE_USER",
+        institution_id=inst1.id,
+        is_active=True
+    )
     user_college2 = User(
         name="Prof. Anita Rao (Dean)",
         email="college2@demo.aicte.gov.in",
@@ -92,6 +100,14 @@ def init_db(db: Session):
         institution_id=None,
         is_active=True
     )
+    user_officer_alias = User(
+        name="AICTE Scrutiny Officer",
+        email="officer@aicte.gov.in",
+        password_hash=pwd,
+        role="AICTE_OFFICER",
+        institution_id=None,
+        is_active=True
+    )
     user_admin = User(
         name="Smt. Priya Nair (System Admin)",
         email="admin@demo.aicte.gov.in",
@@ -100,7 +116,19 @@ def init_db(db: Session):
         institution_id=None,
         is_active=True
     )
-    db.add_all([user_college, user_college2, user_officer, user_admin])
+    user_admin_alias = User(
+        name="AICTE Governance Administrator",
+        email="admin@aicte.gov.in",
+        password_hash=pwd,
+        role="ADMIN",
+        institution_id=None,
+        is_active=True
+    )
+    db.add_all([
+        user_college, user_college_alias, user_college2,
+        user_officer, user_officer_alias,
+        user_admin, user_admin_alias
+    ])
     db.flush()
 
     # 3. Sample Documents (create physical sample dummy PDF in uploads)

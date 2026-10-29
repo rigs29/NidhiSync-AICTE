@@ -139,6 +139,15 @@ class FDRBase(BaseModel):
 class FDRCreate(FDRBase):
     original_fdr_id: Optional[int] = None
 
+class FDRUpdate(BaseModel):
+    administrative_status: Optional[str] = None
+    verification_status: Optional[str] = None
+    scrutiny_remarks: Optional[str] = None
+    outcome: Optional[str] = None
+    observations: Optional[str] = None
+    verification_method: Optional[str] = "MANUAL_SCRUTINY"
+    supporting_reference: Optional[str] = None
+
 class FDRResponse(BaseModel):
     id: int
     institution_id: int

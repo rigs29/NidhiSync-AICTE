@@ -6,7 +6,7 @@ from sqlalchemy import or_, desc
 
 from app.db.session import get_db
 from app.models.models import FDRRecord, Institution, User, VerificationRecord, Document, Notification
-from app.schemas.schemas import FDRCreate, FDRResponse, VerificationCreate, VerificationResponse, DocumentResponse
+from app.schemas.schemas import FDRCreate, FDRUpdate, FDRResponse, VerificationCreate, VerificationResponse, DocumentResponse
 from app.security.auth import get_current_user, require_roles, verify_institution_access
 from app.services.audit import log_audit
 from app.services.ocr_service import compare_fdr_with_extractions
@@ -103,18 +103,22 @@ def get_fdrs(
     # STRICT RBAC & Institutional Isolation
     if current_user.role == "COLLEGE_USER":
         if not current_user.institution_id:
-            return []
-        # Check if user's college has FDRs
-        has_college_fdrs = db.query(FDRRecord).filter(FDRRecord.institution_id == current_user.institution_id).count() > 0
-        if has_college_fdrs:
+            # Auto-link college user to default institution if unassigned
+            first_inst = db.query(Institution).first()
+            if first_inst:
+                current_user.institution_id = first_inst.id
+                db.commit()
+        if current_user.institution_id:
             query = query.filter(FDRRecord.institution_id == current_user.institution_id)
-        # Else: newly registered college has 0 FDRs yet, so query all active sample FDRs for inspection
+        else:
+            return []
     elif institution_id:
         query = query.filter(FDRRecord.institution_id == institution_id)
 
+    # For AICTE Officers and Admins: query selects all FDRs across all institutions
     if search:
         search_filter = f"%{search}%"
-        query = query.join(Institution).filter(
+        query = query.outerjoin(Institution).filter(
             or_(
                 FDRRecord.fdr_number.ilike(search_filter),
                 FDRRecord.bank_name.ilike(search_filter),
@@ -130,7 +134,7 @@ def get_fdrs(
     if bank and bank != "ALL":
         query = query.filter(FDRRecord.bank_name == bank)
 
-    fdrs = query.order_by(desc(FDRRecord.created_at)).offset(skip).limit(limit).all()
+    fdrs = query.order_by(desc(FDRRecord.created_at), desc(FDRRecord.id)).offset(skip).limit(limit).all()
     
     enriched = [_enrich_fdr(f, db) for f in fdrs]
     
@@ -327,3 +331,65 @@ def verify_fdr(
 
     return _enrich_fdr(fdr, db)
 
+
+
+@router.patch("/{id}", response_model=FDRResponse)
+@router.put("/{id}", response_model=FDRResponse)
+def update_fdr_docket(
+    id: int,
+    data: FDRUpdate,
+    current_user: User = Depends(require_roles(["AICTE_OFFICER", "ADMIN"])),
+    db: Session = Depends(get_db)
+):
+    """
+    Allows AICTE Officers and System Administrators to update scrutiny decision dockets,
+    endorse compliance outcomes, and modify scrutiny observations permanently.
+    """
+    fdr = db.query(FDRRecord).filter(FDRRecord.id == id).first()
+    if not fdr:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"FDR record #{id} not found")
+
+    outcome = data.outcome or data.administrative_status or data.verification_status
+    observations = data.observations or data.scrutiny_remarks
+
+    if outcome:
+        outcome = outcome.strip().upper()
+        allowed_outcomes = ["VERIFIED", "CLARIFICATION_REQUIRED", "DISCREPANCY_DETECTED", "REJECTED", "SUBMITTED", "UNDER_REVIEW"]
+        if outcome in allowed_outcomes:
+            fdr.administrative_status = outcome
+            fdr.verification_status = outcome
+
+    if observations:
+        fdr.scrutiny_remarks = observations.strip()
+
+    fdr.updated_at = datetime.datetime.utcnow()
+
+    # Record scrutiny docket entry
+    if outcome or observations:
+        verification = VerificationRecord(
+            fdr_id=fdr.id,
+            reviewer_id=current_user.id,
+            verification_method=data.verification_method or "MANUAL_SCRUTINY",
+            outcome=outcome or fdr.administrative_status,
+            observations=observations or fdr.scrutiny_remarks or "Officer docket scrutiny update.",
+            supporting_reference=data.supporting_reference,
+            created_at=datetime.datetime.utcnow()
+        )
+        db.add(verification)
+
+    db.commit()
+    db.refresh(fdr)
+
+    try:
+        log_audit(
+            db,
+            action=f"UPDATE_DOCKET_{outcome or fdr.administrative_status}",
+            entity_type="FDRRecord",
+            entity_id=str(fdr.id),
+            actor=current_user,
+            metadata_json={"outcome": outcome, "remarks": observations}
+        )
+    except Exception:
+        pass
+
+    return _enrich_fdr(fdr, db)
