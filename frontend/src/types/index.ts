@@ -264,6 +264,7 @@ export interface FieldComparison {
   matches: boolean | null;
   needs_manual_review: boolean;
   evidence?: string | null;
+  approvalStatus?: 'Approved' | 'Pending' | 'Rejected';
 }
 
 export interface OcrComparisonState {
