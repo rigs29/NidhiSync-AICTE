@@ -211,6 +211,14 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     setEditValue('');
   };
 
+  const handlePassField = (field: string, submittedValue: any, extractedValue: any) => {
+    if (!extractedValue || extractedValue === 'Not Detected') {
+      const cleanVal = String(submittedValue).replace(/[₹,]/g, '').trim();
+      setOverrides(prev => ({ ...prev, [field]: cleanVal }));
+    }
+    setFieldApprovals(prev => ({ ...prev, [field]: 'Approved' }));
+  };
+
   const handleToggleApproval = (field: string, currentStatus?: 'Approved' | 'Pending' | 'Rejected') => {
     const nextStatus: 'Approved' | 'Pending' | 'Rejected' = 
       currentStatus === 'Approved' ? 'Rejected' : currentStatus === 'Rejected' ? 'Pending' : 'Approved';
@@ -559,14 +567,14 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                       <th className="py-2.5 px-3">Form Submitted</th>
                       <th className="py-2.5 px-3">OCR Extracted</th>
                       <th className="py-2.5 px-3 text-center">Status</th>
-                      {isOfficerOrAdmin && !readOnly && <th className="py-2.5 px-3 text-right">Action</th>}
-                      <th className="py-2.5 px-3 text-center">Approval</th>
+                      <th className="py-2.5 px-3 text-center">Controls & Actions</th>
+                      <th className="py-2.5 px-3 text-center">Approval Status</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {comparisons.map((c) => {
                       const isMismatched = c.matches === false;
-                      const isMissing = c.extracted === null || c.extracted === undefined;
+                      const isMissing = c.extracted === null || c.extracted === undefined || c.extracted === 'Not Detected';
                       const isExact = c.matches === true;
                       const approval = c.approvalStatus || (isExact ? 'Approved' : 'Pending');
 
@@ -574,7 +582,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                         <tr 
                           key={c.field}
                           className={`transition-colors ${
-                            isMismatched ? 'bg-red-50/50' : isMissing ? 'bg-amber-50/30' : 'hover:bg-slate-50'
+                            approval === 'Approved' ? 'bg-emerald-50/20' : isMismatched ? 'bg-red-50/50' : isMissing ? 'bg-amber-50/30' : 'hover:bg-slate-50'
                           }`}
                         >
                           <td className="py-3 px-3">
@@ -592,27 +600,36 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
 
                           <td className="py-3 px-3">
                             {editingField === c.field ? (
-                              <div className="flex items-center gap-1">
+                              <div className="flex items-center gap-1.5 bg-white p-1 rounded-lg border border-gov-teal-500 shadow-sm">
                                 <input
                                   type="text"
                                   value={editValue}
                                   onChange={e => setEditValue(e.target.value)}
-                                  className="px-2 py-1 text-xs border border-gov-teal-600 rounded bg-white w-32 focus:outline-none"
-                                  placeholder="Officer override"
+                                  className="px-2 py-1 text-xs border border-slate-300 rounded bg-white w-36 focus:outline-none focus:ring-1 focus:ring-gov-teal-500 font-medium"
+                                  placeholder="Enter correct value"
                                   autoFocus
                                 />
                                 <button
                                   type="button"
                                   onClick={() => handleApplyOverride(c.field)}
-                                  className="px-2 py-1 bg-gov-teal-600 text-white rounded text-[10px] font-bold"
+                                  className="px-2.5 py-1 bg-gov-teal-600 hover:bg-gov-teal-700 text-white rounded text-[11px] font-bold shadow-2xs"
                                 >
                                   Save
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditingField(null)}
+                                  className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-600 rounded text-[11px] font-semibold"
+                                >
+                                  Cancel
                                 </button>
                               </div>
                             ) : (
                               <div className="flex items-center gap-1.5">
                                 <span className={`font-mono font-bold ${
-                                  isMismatched 
+                                  approval === 'Approved'
+                                    ? 'text-emerald-700'
+                                    : isMismatched 
                                     ? 'text-red-700 underline decoration-red-400' 
                                     : isMissing 
                                     ? 'text-amber-700 italic' 
@@ -622,7 +639,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                                 </span>
                                 {c.overridden && (
                                   <span className="px-1.5 py-0.2 rounded text-[9px] bg-purple-100 text-purple-800 font-bold">
-                                    Officer Override
+                                    Manual Edit
                                   </span>
                                 )}
                               </div>
@@ -630,73 +647,83 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                           </td>
 
                           <td className="py-3 px-3 text-center">
-                            {isExact && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                            {approval === 'Approved' ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                                {isExact ? 'Exact Match' : 'Verified'}
+                              </span>
+                            ) : approval === 'Rejected' ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-300">
+                                <XCircle className="h-3 w-3 text-red-600" />
+                                Rejected
+                              </span>
+                            ) : isExact ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
                                 <CheckCircle2 className="h-3 w-3" />
                                 Exact Match
                               </span>
-                            )}
-                            {isMismatched && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800">
+                            ) : isMismatched ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800">
                                 <XCircle className="h-3 w-3" />
                                 Mismatch
                               </span>
-                            )}
-                            {isMissing && (
-                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900">
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900">
                                 <HelpCircle className="h-3 w-3" />
                                 Unreadable
                               </span>
                             )}
                           </td>
 
-                          {isOfficerOrAdmin && !readOnly && (
-                            <td className="py-3 px-3 text-right">
+                          <td className="py-3 px-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handlePassField(c.field, c.submitted, c.extracted)}
+                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition-all shadow-2xs ${
+                                  approval === 'Approved'
+                                    ? 'bg-emerald-700 text-white cursor-default'
+                                    : 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                                }`}
+                                title="Pass and verify this attribute"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                <span>Pass</span>
+                              </button>
+
                               <button
                                 type="button"
                                 onClick={() => {
                                   setEditingField(c.field);
-                                  setEditValue(String(c.extracted || c.submitted));
+                                  setEditValue(String(c.extracted || c.submitted).replace(/[₹,]/g, '').trim());
                                 }}
-                                className="inline-flex items-center gap-1 text-[11px] font-semibold text-gov-navy-700 hover:text-gov-teal-700 px-2 py-1 hover:bg-slate-100 rounded"
-                                title="Override OCR reading manually"
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 shadow-2xs transition-colors"
+                                title="Edit and correct OCR extracted value"
                               >
-                                <Edit3 className="h-3.5 w-3.5" />
+                                <Edit3 className="h-3.5 w-3.5 text-gov-teal-600" />
                                 <span>Edit</span>
                               </button>
-                            </td>
-                          )}
+                            </div>
+                          </td>
 
                           <td className="py-3 px-3 text-center">
-                            {isOfficerOrAdmin && !readOnly ? (
-                              <button
-                                type="button"
-                                onClick={() => handleToggleApproval(c.field, approval)}
-                                className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-extrabold transition-all ${
-                                  approval === 'Approved'
-                                    ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border border-emerald-300'
-                                    : approval === 'Rejected'
-                                    ? 'bg-red-100 text-red-800 hover:bg-red-200 border border-red-300'
-                                    : 'bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300'
-                                }`}
-                                title="Click to cycle status: Approved -> Rejected -> Pending"
-                              >
-                                {approval === 'Approved' && <CheckCircle2 className="h-3 w-3" />}
-                                {approval === 'Rejected' && <XCircle className="h-3 w-3" />}
-                                {approval === 'Pending' && <HelpCircle className="h-3 w-3" />}
-                                <span>{approval}</span>
-                              </button>
-                            ) : (
-                              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
+                            <button
+                              type="button"
+                              onClick={() => handleToggleApproval(c.field, approval)}
+                              className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-extrabold transition-all shadow-2xs ${
                                 approval === 'Approved'
-                                  ? 'bg-emerald-100 text-emerald-800'
+                                  ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border border-emerald-300'
                                   : approval === 'Rejected'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-amber-100 text-amber-800'
-                              }`}>
-                                {approval}
-                              </span>
-                            )}
+                                  ? 'bg-red-100 text-red-800 hover:bg-red-200 border border-red-300'
+                                  : 'bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-300'
+                              }`}
+                              title="Click to toggle approval state (Approved / Rejected / Pending)"
+                            >
+                              {approval === 'Approved' && <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />}
+                              {approval === 'Rejected' && <XCircle className="h-3.5 w-3.5 text-red-600" />}
+                              {approval === 'Pending' && <HelpCircle className="h-3.5 w-3.5 text-amber-600" />}
+                              <span>{approval}</span>
+                            </button>
                           </td>
                         </tr>
                       );

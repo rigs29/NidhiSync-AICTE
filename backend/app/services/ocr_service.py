@@ -514,7 +514,7 @@ def _parse_fdr_fields_from_text(raw_text: str) -> Tuple[Dict[str, Any], Dict[str
 
     # 3. Deposit Amount (INR / Rs / ₹)
     amount_match = re.search(
-        r"(?:Amount|Deposit|Principal|Rs\.?|INR|₹)\s*[:\-]?\s*(?:Rs\.?|INR|₹)?\s*([0-9][0-9,]{3,15}(?:\.\d{1,2})?)",
+        r"(?:Amount|Deposit|Principal|Sum|Rs\.?|INR|₹)[^0-9\n]{0,30}?([0-9][0-9,]{3,15}(?:\.\d{1,2})?)",
         raw_text,
         re.IGNORECASE,
     )
