@@ -43,14 +43,14 @@ export const StatCard: React.FC<StatCardProps> = ({
     >
       <div className="flex items-start justify-between min-w-0">
         <div className="space-y-1 min-w-0 flex-1 pr-2">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 truncate">
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 break-words">
             {title}
           </p>
-          <p className="text-2xl sm:text-3xl font-bold tracking-tight truncate">
+          <p className="text-2xl sm:text-3xl font-bold tracking-tight break-words">
             {value}
           </p>
           {subtitle && (
-            <p className="text-xs text-slate-500 font-medium truncate">
+            <p className="text-xs text-slate-500 font-medium break-words">
               {subtitle}
             </p>
           )}

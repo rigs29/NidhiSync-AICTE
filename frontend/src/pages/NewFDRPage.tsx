@@ -48,6 +48,56 @@ export const NewFDRPage: React.FC = () => {
   const [depositType, setDepositType] = useState('Security Deposit (Mandatory)');
   const [institutionId, setInstitutionId] = useState<number | undefined>(user?.institution_id || undefined);
   const [lienAcknowledged, setLienAcknowledged] = useState(true);
+  const [draftSavedMessage, setDraftSavedMessage] = useState<string | null>(null);
+
+  const handleSaveDraft = () => {
+    try {
+      const draftData = {
+        fdrNumber,
+        bankName,
+        branchName,
+        amount,
+        issueDate,
+        maturityDate,
+        depositType,
+        institutionId,
+      };
+      localStorage.setItem('fdr_registration_draft', JSON.stringify(draftData));
+      setDraftSavedMessage('Form draft saved locally. You can restore it anytime.');
+      setTimeout(() => setDraftSavedMessage(null), 4000);
+    } catch {
+      setDraftSavedMessage('Failed to save draft locally.');
+    }
+  };
+
+  const handleRestoreDraft = () => {
+    try {
+      const saved = localStorage.getItem('fdr_registration_draft');
+      if (saved) {
+        const d = JSON.parse(saved);
+        if (d.fdrNumber) setFdrNumber(d.fdrNumber);
+        if (d.bankName) setBankName(d.bankName);
+        if (d.branchName) setBranchName(d.branchName);
+        if (d.amount) setAmount(d.amount);
+        if (d.issueDate) setIssueDate(d.issueDate);
+        if (d.maturityDate) setMaturityDate(d.maturityDate);
+        if (d.depositType) setDepositType(d.depositType);
+        if (d.institutionId) setInstitutionId(d.institutionId);
+        setDraftSavedMessage('Draft restored successfully.');
+        setTimeout(() => setDraftSavedMessage(null), 3000);
+      }
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleClearForm = () => {
+    setFdrNumber('');
+    setBranchName('');
+    setAmount('1500000');
+    setSelectedFile(null);
+    setFilePreviewUrl(null);
+  };
 
   useEffect(() => {
     if (role !== 'COLLEGE_USER') {
@@ -189,19 +239,21 @@ export const NewFDRPage: React.FC = () => {
                 <div className="p-2.5 bg-white rounded-lg border border-slate-200">
                   <span className="text-slate-400 text-[10px] block uppercase">Extracted FDR #</span>
                   <span className="font-mono font-bold text-slate-800">
-                    {ocrExtractionResult.extracted_fields?.fdr_number || 'Pending'}
+                    {ocrExtractionResult.extracted_fields?.fdr_number || 'Not Detected – Manual Verification Required'}
                   </span>
                 </div>
                 <div className="p-2.5 bg-white rounded-lg border border-slate-200">
                   <span className="text-slate-400 text-[10px] block uppercase">Bank Name</span>
                   <span className="font-bold text-slate-800">
-                    {ocrExtractionResult.extracted_fields?.bank_name || 'Pending'}
+                    {ocrExtractionResult.extracted_fields?.bank_name || 'Not Detected – Manual Verification Required'}
                   </span>
                 </div>
                 <div className="p-2.5 bg-white rounded-lg border border-slate-200">
                   <span className="text-slate-400 text-[10px] block uppercase">Principal Sum</span>
                   <span className="font-bold text-slate-800">
-                    ₹{ocrExtractionResult.extracted_fields?.amount ? Number(ocrExtractionResult.extracted_fields.amount).toLocaleString('en-IN') : 'Pending'}
+                    {ocrExtractionResult.extracted_fields?.amount 
+                      ? `₹${Number(ocrExtractionResult.extracted_fields.amount).toLocaleString('en-IN')}` 
+                      : 'Not Detected – Manual Verification Required'}
                   </span>
                 </div>
               </div>
@@ -435,23 +487,60 @@ export const NewFDRPage: React.FC = () => {
             </label>
           </div>
 
-          {/* Form Submit Buttons */}
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-100">
-            <button
-              type="button"
-              onClick={() => navigate('/fdrs')}
-              className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="px-6 py-2.5 rounded-xl bg-gov-navy-900 hover:bg-gov-navy-800 text-white text-xs font-bold shadow-md transition-all flex items-center gap-2 disabled:opacity-50"
-            >
-              <span>{isSubmitting ? 'Registering Instrument & Scanning...' : 'Register FDR Record'}</span>
-              <ArrowRight className="h-4 w-4" />
-            </button>
+          {/* Draft Notification */}
+          {draftSavedMessage && (
+            <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-semibold flex items-center justify-between">
+              <span>{draftSavedMessage}</span>
+              <button type="button" onClick={() => setDraftSavedMessage(null)} className="text-emerald-600 hover:text-emerald-900 font-bold">✕</button>
+            </div>
+          )}
+
+          {/* Form Action Controls */}
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-100">
+            <div className="flex items-center gap-2 w-full sm:w-auto">
+              <button
+                type="button"
+                onClick={handleSaveDraft}
+                className="px-3.5 py-2 text-xs font-semibold rounded-xl border border-slate-300 bg-white text-slate-700 hover:bg-slate-50 transition-colors shadow-2xs"
+                title="Save current form values to local storage"
+              >
+                Save Draft
+              </button>
+              {localStorage.getItem('fdr_registration_draft') && (
+                <button
+                  type="button"
+                  onClick={handleRestoreDraft}
+                  className="px-3 py-2 text-xs font-semibold rounded-xl border border-gov-teal-300 bg-gov-teal-50 text-gov-teal-800 hover:bg-gov-teal-100 transition-colors"
+                >
+                  Restore Draft
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleClearForm}
+                className="px-3 py-2 text-xs font-medium text-slate-500 hover:text-slate-800 transition-colors"
+              >
+                Clear Form
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3 w-full sm:w-auto justify-end">
+              <button
+                type="button"
+                onClick={() => navigate('/fdrs')}
+                className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="px-6 py-2.5 rounded-xl bg-gov-navy-900 hover:bg-gov-navy-800 text-white text-xs font-bold shadow-md transition-all flex items-center gap-2 disabled:opacity-50"
+              >
+                <span>{isSubmitting ? 'Registering Instrument & Scanning...' : 'Register FDR Record'}</span>
+                <ArrowRight className="h-4 w-4" />
+              </button>
+            </div>
           </div>
         </form>
       )}

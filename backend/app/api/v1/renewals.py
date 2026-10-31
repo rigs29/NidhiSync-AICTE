@@ -6,8 +6,8 @@ from sqlalchemy import desc
 
 from app.db.session import get_db
 from app.models.models import FDRRecord, RenewalRecord, User, Institution
-from app.schemas.schemas import RenewalCreate, RenewalResponse
-from app.security.auth import get_current_user, verify_institution_access
+from app.schemas.schemas import RenewalCreate, RenewalResponse, RenewalReview
+from app.security.auth import get_current_user, require_roles, verify_institution_access
 from app.services.audit import log_audit
 from app.notifications.service import NotificationService
 
@@ -137,4 +137,150 @@ def submit_renewal(
         status=renewal_record.status,
         remarks=renewal_record.remarks,
         created_at=renewal_record.created_at
+    )
+
+@router.put("/{id}/review", response_model=RenewalResponse)
+def review_renewal(
+    id: int,
+    data: RenewalReview,
+    current_user: User = Depends(require_roles(["AICTE_OFFICER", "ADMIN"])),
+    db: Session = Depends(get_db)
+):
+    renewal = db.query(RenewalRecord).filter(RenewalRecord.id == id).first()
+    if not renewal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Renewal record not found")
+
+    valid_statuses = ["OFFICER_APPROVED", "REJECTED", "CLARIFICATION_REQUIRED"]
+    if data.status not in valid_statuses:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid review status. Officer can submit: {valid_statuses}"
+        )
+
+    renewal.status = data.status
+    if data.remarks:
+        renewal.remarks = f"{renewal.remarks or ''} | Officer Review: {data.remarks}".strip(" | ")
+
+    repl = db.query(FDRRecord).filter(FDRRecord.id == renewal.replacement_fdr_id).first()
+    orig = db.query(FDRRecord).filter(FDRRecord.id == renewal.original_fdr_id).first()
+
+    if data.status == "OFFICER_APPROVED":
+        if repl:
+            repl.administrative_status = "UNDER_REVIEW"
+            repl.scrutiny_remarks = f"Officer Endorsed: {data.remarks or 'Awaiting final administrative governance approval.'}"
+    elif data.status == "REJECTED":
+        if repl:
+            repl.administrative_status = "REJECTED"
+            repl.scrutiny_remarks = f"Renewal Rejected: {data.remarks or 'Non-compliant replacement instrument.'}"
+        if orig:
+            orig.administrative_status = "MATURED"
+    elif data.status == "CLARIFICATION_REQUIRED":
+        if repl:
+            repl.administrative_status = "CLARIFICATION_REQUIRED"
+            repl.scrutiny_remarks = f"Clarification Required: {data.remarks or 'Please re-submit corrected instrument.'}"
+
+    db.commit()
+    db.refresh(renewal)
+
+    log_audit(
+        db,
+        action=f"REVIEW_RENEWAL_{data.status}",
+        entity_type="RenewalRecord",
+        entity_id=str(renewal.id),
+        actor=current_user,
+        metadata_json={
+            "status": data.status,
+            "remarks": data.remarks,
+            "original_fdr_id": renewal.original_fdr_id,
+            "replacement_fdr_id": renewal.replacement_fdr_id
+        }
+    )
+
+    if orig and orig.submitted_by_id:
+        NotificationService.send_notification(
+            db=db,
+            recipient_id=orig.submitted_by_id,
+            subject=f"Renewal Review Status: {data.status} for FDR {orig.fdr_number}",
+            message=f"Renewal application for FDR {orig.fdr_number} (Replacement: {repl.fdr_number if repl else ''}) has been marked {data.status}. Remarks: {data.remarks or 'N/A'}",
+            notification_type="RENEWAL_ALERT",
+            fdr_id=repl.id if repl else orig.id
+        )
+
+    return RenewalResponse(
+        id=renewal.id,
+        original_fdr_id=renewal.original_fdr_id,
+        original_fdr_number=orig.fdr_number if orig else None,
+        replacement_fdr_id=renewal.replacement_fdr_id,
+        replacement_fdr_number=repl.fdr_number if repl else None,
+        submission_date=renewal.submission_date,
+        status=renewal.status,
+        remarks=renewal.remarks,
+        created_at=renewal.created_at
+    )
+
+@router.put("/{id}/admin-approve", response_model=RenewalResponse)
+def admin_approve_renewal(
+    id: int,
+    data: RenewalReview,
+    current_user: User = Depends(require_roles(["ADMIN"])),
+    db: Session = Depends(get_db)
+):
+    renewal = db.query(RenewalRecord).filter(RenewalRecord.id == id).first()
+    if not renewal:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Renewal record not found")
+
+    repl = db.query(FDRRecord).filter(FDRRecord.id == renewal.replacement_fdr_id).first()
+    orig = db.query(FDRRecord).filter(FDRRecord.id == renewal.original_fdr_id).first()
+
+    renewal.status = "APPROVED"
+    if data.remarks:
+        renewal.remarks = f"{renewal.remarks or ''} | Final Admin Approval: {data.remarks}".strip(" | ")
+
+    if repl:
+        repl.administrative_status = "VERIFIED"
+        repl.maturity_status = "ACTIVE"
+        repl.verification_status = "VERIFIED"
+        repl.scrutiny_remarks = f"Renewal Endorsed & Activated by AICTE Administration. {data.remarks or ''}".strip()
+
+    if orig:
+        orig.administrative_status = "SUPERSEDED_BY_RENEWAL"
+        orig.scrutiny_remarks = f"Statutorily renewed and replaced by FDR {repl.fdr_number if repl else '#' + str(renewal.replacement_fdr_id)}."
+
+    db.commit()
+    db.refresh(renewal)
+
+    log_audit(
+        db,
+        action="FINAL_APPROVE_RENEWAL",
+        entity_type="RenewalRecord",
+        entity_id=str(renewal.id),
+        actor=current_user,
+        metadata_json={
+            "status": "APPROVED",
+            "remarks": data.remarks,
+            "original_fdr_number": orig.fdr_number if orig else None,
+            "replacement_fdr_number": repl.fdr_number if repl else None
+        }
+    )
+
+    if orig and orig.submitted_by_id:
+        NotificationService.send_notification(
+            db=db,
+            recipient_id=orig.submitted_by_id,
+            subject=f"FINAL APPROVAL: FDR Renewal Activated ({repl.fdr_number if repl else ''})",
+            message=f"System Administration has granted final approval for the renewal of FDR {orig.fdr_number}. Replacement instrument {repl.fdr_number if repl else ''} is now active under AICTE joint lien.",
+            notification_type="RENEWAL_ALERT",
+            fdr_id=repl.id if repl else orig.id
+        )
+
+    return RenewalResponse(
+        id=renewal.id,
+        original_fdr_id=renewal.original_fdr_id,
+        original_fdr_number=orig.fdr_number if orig else None,
+        replacement_fdr_id=renewal.replacement_fdr_id,
+        replacement_fdr_number=repl.fdr_number if repl else None,
+        submission_date=renewal.submission_date,
+        status=renewal.status,
+        remarks=renewal.remarks,
+        created_at=renewal.created_at
     )

@@ -136,7 +136,7 @@ def review_release_request(
     if not req:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Release request not found")
 
-    valid_statuses = ["UNDER_REVIEW", "CLARIFICATION_REQUIRED", "APPROVED", "REJECTED", "COMPLETED"]
+    valid_statuses = ["UNDER_REVIEW", "CLARIFICATION_REQUIRED", "OFFICER_APPROVED", "APPROVED", "REJECTED", "COMPLETED"]
     if data.status not in valid_statuses:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid status. Allowed: {valid_statuses}")
 

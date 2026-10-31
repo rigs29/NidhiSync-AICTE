@@ -77,6 +77,16 @@ class InstitutionBase(BaseModel):
 class InstitutionCreate(InstitutionBase):
     pass
 
+class InstitutionUpdate(BaseModel):
+    name: Optional[str] = None
+    institution_type: Optional[str] = None
+    address: Optional[str] = None
+    state: Optional[str] = None
+    contact_person: Optional[str] = None
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = None
+    status: Optional[str] = None
+
 class InstitutionResponse(InstitutionBase):
     id: int
     status: str
@@ -185,6 +195,10 @@ class RenewalCreate(BaseModel):
     issue_date: datetime.date
     maturity_date: datetime.date
     deposit_type: str = "Security Deposit"
+    remarks: Optional[str] = None
+
+class RenewalReview(BaseModel):
+    status: str = Field(..., description="OFFICER_APPROVED, REJECTED, CLARIFICATION_REQUIRED, FINAL_APPROVED")
     remarks: Optional[str] = None
 
 class RenewalResponse(BaseModel):

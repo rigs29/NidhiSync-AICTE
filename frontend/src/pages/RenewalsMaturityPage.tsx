@@ -11,7 +11,11 @@ import {
   PlusCircle,
   ArrowRight,
   ShieldAlert,
-  HelpCircle
+  ShieldCheck,
+  HelpCircle,
+  Eye,
+  XCircle,
+  FileCheck2
 } from 'lucide-react';
 import { api } from '../services/api';
 import { RenewalRecord, FDRRecord } from '../types';
@@ -24,12 +28,14 @@ import { useAuth } from '../context/AuthContext';
 export const RenewalsMaturityPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const { role, user } = useAuth();
+  const isAdmin = role === 'ADMIN';
+  const isOfficerOrAdmin = role === 'AICTE_OFFICER' || role === 'ADMIN';
 
   const [renewals, setRenewals] = useState<RenewalRecord[]>([]);
   const [maturingFdrs, setMaturingFdrs] = useState<FDRRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Renewal Modal Form
+  // Renewal Modal Form (College Submit)
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [originalFdrId, setOriginalFdrId] = useState<number | ''>(
     searchParams.get('fdr_id') ? Number(searchParams.get('fdr_id')) : ''
@@ -47,6 +53,19 @@ export const RenewalsMaturityPage: React.FC = () => {
   const [remarks, setRemarks] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Officer Scrutiny Review Modal (Stage 2)
+  const [officerModalRenewal, setOfficerModalRenewal] = useState<RenewalRecord | null>(null);
+  const [officerDecision, setOfficerDecision] = useState<'OFFICER_APPROVED' | 'CLARIFICATION_REQUIRED' | 'REJECTED'>('OFFICER_APPROVED');
+  const [officerRemarks, setOfficerRemarks] = useState('');
+  const [isSubmittingOfficer, setIsSubmittingOfficer] = useState(false);
+  const [officerError, setOfficerError] = useState<string | null>(null);
+
+  // Admin Final Approval Modal (Stage 3)
+  const [adminModalRenewal, setAdminModalRenewal] = useState<RenewalRecord | null>(null);
+  const [adminRemarks, setAdminRemarks] = useState('');
+  const [isSubmittingAdmin, setIsSubmittingAdmin] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -113,6 +132,99 @@ export const RenewalsMaturityPage: React.FC = () => {
     }
   };
 
+  // Stage 2: Officer Endorsement
+  const handleOfficerReviewSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!officerModalRenewal) return;
+    if (officerRemarks.trim().length < 5) {
+      setOfficerError('Review observations must be at least 5 characters.');
+      return;
+    }
+
+    setIsSubmittingOfficer(true);
+    setOfficerError(null);
+    try {
+      await api.put(`/renewals/${officerModalRenewal.id}/review`, {
+        status: officerDecision,
+        remarks: officerRemarks.trim(),
+      });
+      setOfficerModalRenewal(null);
+      setOfficerRemarks('');
+      fetchData();
+    } catch (err: any) {
+      setOfficerError(err.message || 'Failed to record scrutiny determination.');
+    } finally {
+      setIsSubmittingOfficer(false);
+    }
+  };
+
+  // Stage 3: Admin Final Approval
+  const handleAdminApprovalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adminModalRenewal) return;
+
+    setIsSubmittingAdmin(true);
+    setAdminError(null);
+    try {
+      await api.put(`/renewals/${adminModalRenewal.id}/admin-approve`, {
+        remarks: adminRemarks.trim() || 'Final governance sanction granted under council authority.',
+      });
+      setAdminModalRenewal(null);
+      setAdminRemarks('');
+      fetchData();
+    } catch (err: any) {
+      setAdminError(err.message || 'Failed to grant final administrator approval.');
+    } finally {
+      setIsSubmittingAdmin(false);
+    }
+  };
+
+  const getRenewalStatusBadge = (status: string) => {
+    switch (status) {
+      case 'SUBMITTED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-900 border border-amber-300">
+            <Clock className="h-3 w-3 text-amber-600" />
+            <span>Stage 1: Awaiting Officer Review</span>
+          </span>
+        );
+      case 'OFFICER_APPROVED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-900 border border-blue-300">
+            <FileCheck2 className="h-3 w-3 text-blue-600" />
+            <span>Stage 2: Officer Endorsed (Awaiting Admin)</span>
+          </span>
+        );
+      case 'APPROVED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-900 border border-emerald-300">
+            <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+            <span>Stage 3: Approved & Activated</span>
+          </span>
+        );
+      case 'REJECTED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-red-50 text-red-900 border border-red-300">
+            <XCircle className="h-3 w-3 text-red-600" />
+            <span>Rejected</span>
+          </span>
+        );
+      case 'CLARIFICATION_REQUIRED':
+        return (
+          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-purple-50 text-purple-900 border border-purple-300">
+            <HelpCircle className="h-3 w-3 text-purple-600" />
+            <span>Clarification Required</span>
+          </span>
+        );
+      default:
+        return (
+          <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-800 border border-slate-200">
+            {status}
+          </span>
+        );
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -126,7 +238,7 @@ export const RenewalsMaturityPage: React.FC = () => {
             FDR Renewals & Maturity Tracking
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Automated compliance radar for 30-day, 15-day, and 7-day maturity reminders and replacement instrument registration.
+            Multi-stage statutory renewal lifecycle: College Submission → AICTE Scrutiny Endorsement → System Administrator Final Activation.
           </p>
         </div>
 
@@ -148,38 +260,46 @@ export const RenewalsMaturityPage: React.FC = () => {
           <div className="flex items-center justify-between border-b border-amber-100 pb-2.5">
             <div className="flex items-center gap-2 text-xs font-bold text-amber-900 uppercase tracking-wide">
               <Clock className="h-4 w-4 text-amber-600" />
-              <span>Instruments Requiring Immediate Renewal ({maturingFdrs.length})</span>
+              <span>Maturing / Matured Security Deposits Requiring Renewal ({maturingFdrs.length})</span>
             </div>
-            <span className="text-[10px] text-amber-700 font-semibold">
-              Statutory 30-Day Window Active
-            </span>
+            <span className="text-[10px] text-amber-700 font-semibold">Immediate Compliance Action Required</span>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {maturingFdrs.map(f => (
               <div
                 key={f.id}
-                className="p-3.5 rounded-xl border border-amber-200/80 bg-amber-50/40 text-xs space-y-2"
+                className="p-3.5 bg-amber-50/60 rounded-xl border border-amber-200 space-y-2 text-xs"
               >
                 <div className="flex items-start justify-between">
-                  <span className="font-mono font-bold text-slate-900">{f.fdr_number}</span>
+                  <div>
+                    <span className="font-mono font-bold text-amber-950">{f.fdr_number}</span>
+                    <span className="text-[10px] text-amber-800 block">{f.bank_name}</span>
+                  </div>
                   <MaturityBadge status={f.maturity_status} days={f.days_to_maturity} size="sm" />
                 </div>
-                <div className="text-slate-600 font-medium">
-                  {f.institution_name} • ₹{(f.amount / 100000).toFixed(1)} Lakhs
+
+                <div className="text-[11px] text-slate-700 flex items-center justify-between">
+                  <span>Principal Sum:</span>
+                  <span className="font-bold font-mono">₹{f.amount.toLocaleString('en-IN')}</span>
                 </div>
-                <div className="flex items-center justify-between pt-1 border-t border-amber-200/50">
-                  <span className="text-[10px] text-slate-500">Matures: {f.maturity_date ? f.maturity_date.split('T')[0] : 'N/A'}</span>
+
+                <div className="pt-1 flex items-center justify-between border-t border-amber-200/60">
+                  <span className="text-[10px] text-slate-500">
+                    Expiry: {f.maturity_date ? f.maturity_date.split('T')[0] : 'N/A'}
+                  </span>
                   <button
                     onClick={() => {
                       setOriginalFdrId(f.id);
-                      setBankName(f.bank_name);
                       setAmount(String(f.amount));
+                      setBankName(f.bank_name);
+                      setBranchName(f.branch_name);
                       setIsModalOpen(true);
                     }}
-                    className="text-[11px] font-bold text-gov-teal-800 hover:underline"
+                    className="inline-flex items-center gap-1 text-[11px] font-bold text-gov-teal-700 hover:text-gov-teal-900"
                   >
-                    Renew Now →
+                    <span>Renew This FDR</span>
+                    <ArrowRight className="h-3 w-3" />
                   </button>
                 </div>
               </div>
@@ -188,23 +308,23 @@ export const RenewalsMaturityPage: React.FC = () => {
         </div>
       )}
 
-      {/* Renewals History Table */}
+      {/* Renewal History / In-Progress Table */}
       <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
         <div className="flex items-center justify-between border-b border-slate-100 pb-3">
           <div className="flex items-center gap-2">
             <RefreshCw className="h-4 w-4 text-gov-navy-900" />
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-900">
-              Submitted Replacement / Renewal Records
+              Statutory Renewal Dockets & Multi-Stage Approvals ({renewals.length})
             </h3>
           </div>
         </div>
 
         {isLoading ? (
-          <LoadingSpinner message="Retrieving renewal records..." />
+          <LoadingSpinner message="Querying renewal applications..." />
         ) : renewals.length === 0 ? (
           <EmptyState
-            title="No Active Renewals Registered"
-            description="When an FDR reaches maturity, submit a replacement FDR here to maintain seamless statutory lien compliance."
+            title="No Renewal Records"
+            description="No replacement fixed deposit receipts have been submitted yet."
             actionText="Submit Renewal"
             onAction={() => setIsModalOpen(true)}
           />
@@ -215,17 +335,17 @@ export const RenewalsMaturityPage: React.FC = () => {
                 <tr className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold uppercase tracking-wider text-[11px]">
                   <th className="py-3 px-4">Original FDR</th>
                   <th className="py-3 px-4">Replacement FDR</th>
-                  <th className="py-3 px-4">Submission Date</th>
-                  <th className="py-3 px-4">Renewal Status</th>
-                  <th className="py-3 px-4">Remarks</th>
-                  <th className="py-3 px-4 text-right">Action</th>
+                  <th className="py-3 px-4">Submitted Date</th>
+                  <th className="py-3 px-4">Approval Stage Status</th>
+                  <th className="py-3 px-4">Observations</th>
+                  <th className="py-3 px-4 text-right">Workflow Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {renewals.map(r => (
                   <tr key={r.id} className="hover:bg-slate-50/80 transition-colors">
-                    <td className="py-3.5 px-4 font-mono font-bold text-slate-700">
-                      <Link to={`/fdrs/${r.original_fdr_id}`} className="hover:underline text-gov-navy-950">
+                    <td className="py-3.5 px-4 font-mono font-bold text-gov-navy-950">
+                      <Link to={`/fdrs/${r.original_fdr_id}`} className="hover:underline">
                         {r.original_fdr_number || `#${r.original_fdr_id}`}
                       </Link>
                     </td>
@@ -241,9 +361,7 @@ export const RenewalsMaturityPage: React.FC = () => {
                     </td>
 
                     <td className="py-3.5 px-4">
-                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-blue-50 text-blue-800 border border-blue-200">
-                        {r.status}
-                      </span>
+                      {getRenewalStatusBadge(r.status)}
                     </td>
 
                     <td className="py-3.5 px-4 text-slate-500 max-w-xs truncate">
@@ -251,12 +369,45 @@ export const RenewalsMaturityPage: React.FC = () => {
                     </td>
 
                     <td className="py-3.5 px-4 text-right">
-                      <Link
-                        to={`/fdrs/${r.replacement_fdr_id}`}
-                        className="text-xs font-bold text-gov-teal-700 hover:underline"
-                      >
-                        Inspect →
-                      </Link>
+                      <div className="flex items-center justify-end gap-2">
+                        {/* Stage 2 Action: AICTE Scrutiny Officer Endorsement */}
+                        {isOfficerOrAdmin && (r.status === 'SUBMITTED' || r.status === 'CLARIFICATION_REQUIRED') && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOfficerModalRenewal(r);
+                              setOfficerDecision('OFFICER_APPROVED');
+                              setOfficerRemarks(r.remarks || '');
+                              setOfficerError(null);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-gov-teal-600 text-white hover:bg-gov-teal-700 shadow-2xs"
+                          >
+                            Review & Endorse
+                          </button>
+                        )}
+
+                        {/* Stage 3 Action: System Administrator Final Approval */}
+                        {isAdmin && r.status === 'OFFICER_APPROVED' && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAdminModalRenewal(r);
+                              setAdminRemarks(r.remarks || '');
+                              setAdminError(null);
+                            }}
+                            className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-gov-navy-900 text-white hover:bg-gov-navy-800 shadow-2xs"
+                          >
+                            Final Admin Approval
+                          </button>
+                        )}
+
+                        <Link
+                          to={`/fdrs/${r.replacement_fdr_id}`}
+                          className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 text-xs font-semibold"
+                        >
+                          Inspect →
+                        </Link>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -265,6 +416,137 @@ export const RenewalsMaturityPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Stage 2: Officer Scrutiny Review Modal */}
+      {officerModalRenewal && (
+        <Modal
+          isOpen={true}
+          onClose={() => setOfficerModalRenewal(null)}
+          title={`Scrutiny Officer Review: Replacement FDR ${officerModalRenewal.replacement_fdr_number}`}
+          subtitle={`Original FDR: ${officerModalRenewal.original_fdr_number} • Submitted ${new Date(officerModalRenewal.submission_date).toLocaleDateString()}`}
+        >
+          <form onSubmit={handleOfficerReviewSubmit} className="space-y-4">
+            {officerError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 font-semibold">
+                {officerError}
+              </div>
+            )}
+
+            <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs space-y-2">
+              <span className="font-bold text-slate-700 block uppercase text-[10px]">Renewal Overview</span>
+              <div className="grid grid-cols-2 gap-2 text-slate-600">
+                <div>Original Instrument: <strong>{officerModalRenewal.original_fdr_number}</strong></div>
+                <div>Replacement Instrument: <strong>{officerModalRenewal.replacement_fdr_number}</strong></div>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Scrutiny Endorsement Determination *
+              </label>
+              <select
+                value={officerDecision}
+                onChange={e => setOfficerDecision(e.target.value as any)}
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-gov-navy-900"
+              >
+                <option value="OFFICER_APPROVED">OFFICER_APPROVED — Endorse & Forward to System Admin for Final Sanction</option>
+                <option value="CLARIFICATION_REQUIRED">CLARIFICATION_REQUIRED — Request Document Clarification from College</option>
+                <option value="REJECTED">REJECTED — Renewal Instrument Inadmissible</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Mandatory Scrutiny Observations * (Min 5 chars)
+              </label>
+              <textarea
+                rows={3}
+                value={officerRemarks}
+                onChange={e => setOfficerRemarks(e.target.value)}
+                placeholder="Enter statutory scrutiny observations..."
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-medium focus:outline-none focus:ring-2 focus:ring-gov-navy-900"
+                required
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setOfficerModalRenewal(null)}
+                className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingOfficer}
+                className="px-5 py-2 text-xs font-bold rounded-xl bg-gov-teal-600 text-white hover:bg-gov-teal-700 transition-colors shadow-sm disabled:opacity-50"
+              >
+                {isSubmittingOfficer ? 'Recording Endorsement...' : 'Commit Scrutiny Endorsement'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* Stage 3: Admin Final Approval Modal */}
+      {adminModalRenewal && (
+        <Modal
+          isOpen={true}
+          onClose={() => setAdminModalRenewal(null)}
+          title={`Administrator Final Approval: Replacement FDR ${adminModalRenewal.replacement_fdr_number}`}
+          subtitle="Final Governance Authority: Activates replacement FDR and retires original instrument."
+        >
+          <form onSubmit={handleAdminApprovalSubmit} className="space-y-4">
+            {adminError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-800 font-semibold">
+                {adminError}
+              </div>
+            )}
+
+            <div className="p-4 bg-emerald-50 rounded-xl border border-emerald-200 text-xs space-y-2 text-emerald-950">
+              <div className="flex items-center gap-2 font-bold text-emerald-900">
+                <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                <span>Executive Governance Sanction Notice</span>
+              </div>
+              <p className="leading-relaxed text-[11px] text-emerald-850">
+                Upon your final approval, replacement instrument <strong>{adminModalRenewal.replacement_fdr_number}</strong> will become an active statutory lien (Status: VERIFIED), and original FDR <strong>{adminModalRenewal.original_fdr_number}</strong> will transition to SUPERSEDED_BY_RENEWAL.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1">
+                Executive Sanction Remarks
+              </label>
+              <textarea
+                rows={3}
+                value={adminRemarks}
+                onChange={e => setAdminRemarks(e.target.value)}
+                placeholder="Sanction orders under AICTE Approval Process Regulations..."
+                className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-medium focus:outline-none focus:ring-2 focus:ring-gov-navy-900"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setAdminModalRenewal(null)}
+                className="px-4 py-2 text-xs font-semibold rounded-xl border border-slate-300 text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSubmittingAdmin}
+                className="px-5 py-2 text-xs font-bold rounded-xl bg-gov-navy-900 text-white hover:bg-gov-navy-800 transition-colors shadow-sm disabled:opacity-50 flex items-center gap-1.5"
+              >
+                <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                <span>{isSubmittingAdmin ? 'Granting Sanction...' : 'Grant Final Activation Approval'}</span>
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {/* Renewal Submission Modal */}
       <Modal
@@ -361,7 +643,7 @@ export const RenewalsMaturityPage: React.FC = () => {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                New Issue Date *
+                Issue Date *
               </label>
               <input
                 type="date"
@@ -374,7 +656,7 @@ export const RenewalsMaturityPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                New Maturity Date *
+                Maturity Date (Min 3 Years) *
               </label>
               <input
                 type="date"
@@ -394,7 +676,7 @@ export const RenewalsMaturityPage: React.FC = () => {
               rows={2}
               value={remarks}
               onChange={e => setRemarks(e.target.value)}
-              placeholder="e.g. Mandatory 3-year extension with joint lien endorsement."
+              placeholder="Replacement deposit under joint lien with Member Secretary AICTE..."
               className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 font-medium focus:ring-2 focus:ring-gov-navy-900 focus:outline-none"
             />
           </div>
@@ -412,7 +694,7 @@ export const RenewalsMaturityPage: React.FC = () => {
               disabled={isSubmitting}
               className="px-5 py-2 text-xs font-bold rounded-xl bg-gov-navy-900 text-white hover:bg-gov-navy-800 transition-colors shadow-sm disabled:opacity-50"
             >
-              {isSubmitting ? 'Registering Renewal...' : 'Commit Renewal'}
+              {isSubmitting ? 'Registering Replacement...' : 'Submit Renewal Application'}
             </button>
           </div>
         </form>
@@ -420,4 +702,3 @@ export const RenewalsMaturityPage: React.FC = () => {
     </div>
   );
 };
-

@@ -23,6 +23,10 @@ from app.api.v1.jobs import router as jobs_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import sys, os
+    if os.getenv('TESTING') == 'true' or 'pytest' in sys.modules:
+        yield
+        return
     # Startup: Initialize DB and seeds with non-blocking retry for database provisioning
     import asyncio
     for attempt in range(1, 6):

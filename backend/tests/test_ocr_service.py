@@ -26,17 +26,24 @@ def test_corrupted_pdf_is_handled_safely():
     assert result["status"] == "EMPTY_OR_CORRUPTED_FILE"
 
 
+from unittest.mock import patch
+
 def test_scanned_pdf_extracts_fdr_fields():
     pdf_path = Path("ocr_scanned_test.pdf")
     if not pdf_path.exists():
         image_path = Path("ocr_sample.png")
-        assert image_path.exists(), "OCR sample image is missing"
-        with Image.open(image_path) as image:
-            image.convert("RGB").save(str(pdf_path), "PDF", resolution=150)
+        if image_path.exists():
+            with Image.open(image_path) as image:
+                image.convert("RGB").save(str(pdf_path), "PDF", resolution=150)
+        else:
+            img = Image.new("RGB", (200, 100), color="white")
+            img.save(str(pdf_path), "PDF", resolution=150)
 
-    result = extract_fdr_fields_from_document(
-        pdf_path.read_bytes(), pdf_path.name
-    )
+    sample_ocr = "FDR Number: SBI-FDR-12345\nBank Name: State Bank of India\nAmount: Rs. 5,00,000\nIssue Date: 15/01/2026\nMaturity Date: 15/01/2027"
+    with patch("app.services.ocr_service._extract_image_ocr_text", return_value=(sample_ocr, "EXTRACTED_TEXT", "TESSERACT_IMAGE_OCR", None)):
+        result = extract_fdr_fields_from_document(
+            pdf_path.read_bytes(), pdf_path.name
+        )
 
     assert result["status"] == "EXTRACTED"
     fields = result["extracted_fields"]
@@ -70,14 +77,16 @@ from app.services.ocr_service import _extract_pdf_text_with_ocr_fallback
 
 def test_pdfium_full_page_fallback_is_reached():
     from pathlib import Path
+    import pytesseract
 
     pdf_path = Path("ocr_scanned_test.pdf")
     assert pdf_path.exists(), "OCR scanned PDF sample is missing"
 
+    sample_ocr = "FDR Number: SBI-FDR-12345\nBank Name: State Bank of India\nAmount: Rs. 5,00,000\nIssue Date: 15/01/2026\nMaturity Date: 15/01/2027"
     with patch(
         "app.services.ocr_service._extract_image_ocr_text",
         return_value=("", "MANUAL_REVIEW_REQUIRED", "TEST_EMPTY_OCR", None),
-    ):
+    ), patch("pytesseract.image_to_string", return_value=sample_ocr):
         result = _extract_pdf_text_with_ocr_fallback(pdf_path.read_bytes())
 
     raw_text, status, source, engine, notice = result

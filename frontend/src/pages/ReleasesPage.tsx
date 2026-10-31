@@ -208,13 +208,37 @@ export const ReleasesPage: React.FC = () => {
                     </td>
 
                     <td className="py-3.5 px-4">
-                      <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${
-                        req.status === 'APPROVED' ? 'bg-emerald-50 text-emerald-800 border-emerald-300' :
-                        req.status === 'REJECTED' ? 'bg-red-50 text-red-800 border-red-300' :
-                        'bg-amber-50 text-amber-900 border-amber-300'
-                      }`}>
-                        {req.status}
-                      </span>
+                      {req.status === 'SUBMITTED' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 text-amber-900 border border-amber-300">
+                          <Clock className="h-3 w-3 text-amber-600" />
+                          <span>Stage 1: Awaiting Scrutiny</span>
+                        </span>
+                      ) : req.status === 'OFFICER_APPROVED' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-900 border border-blue-300">
+                          <FileCheck2 className="h-3 w-3 text-blue-600" />
+                          <span>Stage 2: Officer Endorsed (Awaiting Admin)</span>
+                        </span>
+                      ) : req.status === 'APPROVED' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-900 border border-emerald-300">
+                          <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+                          <span>Stage 3: Admin Sanctioned</span>
+                        </span>
+                      ) : req.status === 'COMPLETED' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-teal-50 text-teal-900 border border-teal-300">
+                          <ShieldCheck className="h-3 w-3 text-teal-600" />
+                          <span>Lien Dissolved</span>
+                        </span>
+                      ) : req.status === 'REJECTED' ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-red-50 text-red-900 border border-red-300">
+                          <XCircle className="h-3 w-3 text-red-600" />
+                          <span>Rejected</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-purple-50 text-purple-900 border border-purple-300">
+                          <AlertTriangle className="h-3 w-3 text-purple-600" />
+                          <span>Clarification Required</span>
+                        </span>
+                      )}
                     </td>
 
                     <td className="py-3.5 px-4 text-slate-500 max-w-xs truncate">
@@ -339,11 +363,21 @@ export const ReleasesPage: React.FC = () => {
                 onChange={e => setReviewStatus(e.target.value)}
                 className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 bg-white font-semibold text-slate-800 focus:ring-2 focus:ring-gov-navy-900 focus:outline-none"
               >
-                <option value="APPROVED">APPROVED — Release Authorized under Seal</option>
-                <option value="CLARIFICATION_REQUIRED">CLARIFICATION_REQUIRED — Ask College for NOC</option>
-                <option value="REJECTED">REJECTED — Statutory Lock-in Incomplete</option>
-                <option value="UNDER_REVIEW">UNDER_REVIEW — Forward to Legal Cell</option>
-                <option value="COMPLETED">COMPLETED — Lien Dissolved at Bank</option>
+                {role === 'ADMIN' ? (
+                  <>
+                    <option value="APPROVED">APPROVED — Final Governance Sanction Granted under Council Seal</option>
+                    <option value="COMPLETED">COMPLETED — Statutory Lien Formally Dissolved at Bank</option>
+                    <option value="REJECTED">REJECTED — Petition Denied</option>
+                    <option value="CLARIFICATION_REQUIRED">CLARIFICATION_REQUIRED — Request Audit Evidence</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="OFFICER_APPROVED">OFFICER_APPROVED — Endorse & Forward to System Admin for Final Sanction</option>
+                    <option value="CLARIFICATION_REQUIRED">CLARIFICATION_REQUIRED — Request Document Clarification / NOC from College</option>
+                    <option value="REJECTED">REJECTED — Mandatory Lock-in Incomplete or Non-Compliant</option>
+                    <option value="UNDER_REVIEW">UNDER_REVIEW — Under Scrutiny Verification</option>
+                  </>
+                )}
               </select>
             </div>
 

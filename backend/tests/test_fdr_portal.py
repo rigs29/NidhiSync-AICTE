@@ -453,3 +453,91 @@ def test_verification_records_ocr_mismatch_warning(client, monkeypatch):
         assert audit_metadata["ocr_comparison"]["missing_fields"] == ["maturity_date"]
     finally:
         db.close()
+
+
+def test_institution_update_and_permission_enforcement(client: TestClient):
+    college_token = get_auth_token(client, "college@demo.aicte.gov.in")
+    college_headers = {"Authorization": f"Bearer {college_token}"}
+    admin_token = get_auth_token(client, "admin@demo.aicte.gov.in")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # College 1 tries to edit Institution 2 -> Expect 403 Forbidden
+    forbidden_res = client.put(
+        "/api/v1/institutions/2",
+        json={"contact_person": "Unauthorized Hacker"},
+        headers=college_headers
+    )
+    assert forbidden_res.status_code == 403
+
+    # College 1 edits their own institution (Institution 1) -> Success 200
+    update_res = client.put(
+        "/api/v1/institutions/1",
+        json={"contact_person": "Dr. Ramesh Sharma Updated", "phone": "+91-11-99998888"},
+        headers=college_headers
+    )
+    assert update_res.status_code == 200
+    data = update_res.json()
+    assert data["contact_person"] == "Dr. Ramesh Sharma Updated"
+    assert data["phone"] == "+91-11-99998888"
+
+    # Admin edits any institution -> Success 200
+    admin_res = client.put(
+        "/api/v1/institutions/2",
+        json={"address": "Updated Campus Road, Bengaluru"},
+        headers=admin_headers
+    )
+    assert admin_res.status_code == 200
+    assert admin_res.json()["address"] == "Updated Campus Road, Bengaluru"
+
+
+def test_complete_renewal_multistage_approval_lifecycle(client: TestClient):
+    college_token = get_auth_token(client, "college@demo.aicte.gov.in")
+    college_headers = {"Authorization": f"Bearer {college_token}"}
+    officer_token = get_auth_token(client, "officer@demo.aicte.gov.in")
+    officer_headers = {"Authorization": f"Bearer {officer_token}"}
+    admin_token = get_auth_token(client, "admin@demo.aicte.gov.in")
+    admin_headers = {"Authorization": f"Bearer {admin_token}"}
+
+    # Step 1 & 2: College submits replacement FDR
+    ren_payload = {
+        "original_fdr_id": 2,
+        "fdr_number": "PNB-RENEW-2026-999",
+        "bank_name": "Punjab National Bank",
+        "branch_name": "Dwarka Sector 10 Branch, New Delhi",
+        "amount": 1000000.0,
+        "issue_date": "2026-02-01",
+        "maturity_date": "2029-02-01",
+        "deposit_type": "Security Deposit",
+        "remarks": "Mandatory 3-year renewal replacement"
+    }
+    submit_res = client.post("/api/v1/renewals", json=ren_payload, headers=college_headers)
+    assert submit_res.status_code == 200
+    ren_id = submit_res.json()["id"]
+    repl_fdr_id = submit_res.json()["replacement_fdr_id"]
+    assert submit_res.json()["status"] == "PENDING_REVIEW"
+
+    # Step 3 & 4: Officer reviews and endorses (OFFICER_APPROVED)
+    review_res = client.put(
+        f"/api/v1/renewals/{ren_id}/review",
+        json={"status": "OFFICER_APPROVED", "remarks": "Instrument verified against branch lien seal."},
+        headers=officer_headers
+    )
+    assert review_res.status_code == 200
+    assert review_res.json()["status"] == "OFFICER_APPROVED"
+
+    # Step 5 & 6: System Admin provides FINAL APPROVAL
+    admin_res = client.put(
+        f"/api/v1/renewals/{ren_id}/admin-approve",
+        json={"status": "APPROVED", "remarks": "Approved by AICTE Administrative Governance Council."},
+        headers=admin_headers
+    )
+    assert admin_res.status_code == 200
+    assert admin_res.json()["status"] == "APPROVED"
+
+    # Verify replacement FDR is now VERIFIED and original FDR is SUPERSEDED_BY_RENEWAL
+    repl_fdr = client.get(f"/api/v1/fdrs/{repl_fdr_id}", headers=admin_headers).json()
+    assert repl_fdr["administrative_status"] == "VERIFIED"
+    assert repl_fdr["maturity_status"] == "ACTIVE"
+
+    orig_fdr = client.get(f"/api/v1/fdrs/2", headers=admin_headers).json()
+    assert orig_fdr["administrative_status"] == "SUPERSEDED_BY_RENEWAL"

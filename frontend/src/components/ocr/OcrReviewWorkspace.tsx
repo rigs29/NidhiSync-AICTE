@@ -43,6 +43,7 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
   const [isViewerOpen, setIsViewerOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [scanStep, setScanStep] = useState<number>(0); // 0: idle, 1: 20%, 2: 50%, 3: 100%
 
   // Officer Scrutiny Decision State
   const [outcome, setOutcome] = useState<string>(fdr.administrative_status || 'VERIFIED');
@@ -65,23 +66,36 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
     }
   }, [fdr]);
 
-  // Handle new document upload with live OCR
+  // Handle new document upload with live OCR and progress sequence
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     setIsUploading(true);
     setUploadError(null);
+    setScanStep(1); // 20%
     try {
       const formData = new FormData();
       formData.append('file', file);
+
+      // Advance visual scan step
+      const stepTimer1 = setTimeout(() => setScanStep(2), 700); // 50%
+      const stepTimer2 = setTimeout(() => setScanStep(3), 1500); // 100%
+
       const res = await api.upload<DocumentRecord>(`/documents/upload/${fdr.id}`, formData);
+      
+      clearTimeout(stepTimer1);
+      clearTimeout(stepTimer2);
+      setScanStep(3); // 100%
+      await new Promise(r => setTimeout(r, 600));
+
       setActiveDoc(res);
       if (onRefreshFdr) onRefreshFdr();
     } catch (err: any) {
       setUploadError(err.message || 'Failed to upload document and run OCR analysis.');
     } finally {
       setIsUploading(false);
+      setScanStep(0);
     }
   };
 
@@ -487,9 +501,25 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
             )}
 
             {isUploading && (
-              <div className="p-3 bg-gov-teal-50 border border-gov-teal-200 rounded-xl flex items-center gap-2 text-xs text-gov-teal-900 font-semibold animate-pulse">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                <span>Running multi-layer OCR & regex field extraction pipeline...</span>
+              <div className="p-4 bg-slate-900 text-white border border-slate-700 rounded-xl space-y-2.5 font-mono text-xs shadow-md">
+                <div className="flex items-center justify-between text-gov-teal-400 font-bold">
+                  <span className="flex items-center gap-2">
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    OCR Scanning Engine Active
+                  </span>
+                  <span>{scanStep === 1 ? '20%' : scanStep === 2 ? '50%' : '100%'}</span>
+                </div>
+                <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                  <div 
+                    className="bg-gov-teal-400 h-2 transition-all duration-500 rounded-full"
+                    style={{ width: scanStep === 1 ? '20%' : scanStep === 2 ? '50%' : '100%' }}
+                  />
+                </div>
+                <p className="text-[11px] text-slate-300">
+                  {scanStep === 1 && '[📁 File Received. Initiating OCR Scan... █▒▒▒▒▒▒▒▒▒ 20%]'}
+                  {scanStep === 2 && '[🔍 Extracting Fields & Validating Text... █████▒▒▒▒▒ 50%]'}
+                  {scanStep >= 3 && '[✨ Verifying Data Integrity & Formatting... ██████████ 100%]'}
+                </p>
               </div>
             )}
 
@@ -647,30 +677,25 @@ export const OcrReviewWorkspace: React.FC<OcrReviewWorkspaceProps> = ({
                           </td>
 
                           <td className="py-3 px-3 text-center">
-                            {approval === 'Approved' ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                                <CheckCircle2 className="h-3 w-3 text-emerald-600" />
-                                {isExact ? 'Exact Match' : 'Verified'}
-                              </span>
-                            ) : approval === 'Rejected' ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-300">
-                                <XCircle className="h-3 w-3 text-red-600" />
-                                Rejected
+                            {c.overridden ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-purple-100 text-purple-900 border border-purple-300">
+                                <Edit3 className="h-3 w-3 text-purple-700" />
+                                Manual Override
                               </span>
                             ) : isExact ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-                                <CheckCircle2 className="h-3 w-3" />
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                <CheckCircle2 className="h-3 w-3 text-emerald-600" />
                                 Exact Match
                               </span>
                             ) : isMismatched ? (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800">
-                                <XCircle className="h-3 w-3" />
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-300">
+                                <XCircle className="h-3 w-3 text-red-600" />
                                 Mismatch
                               </span>
                             ) : (
-                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900">
-                                <HelpCircle className="h-3 w-3" />
-                                Unreadable
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-900 border border-amber-300">
+                                <HelpCircle className="h-3 w-3 text-amber-700" />
+                                Not Detected
                               </span>
                             )}
                           </td>

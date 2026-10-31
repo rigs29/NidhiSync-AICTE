@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 from app.db.session import get_db
 from app.models.models import Institution, User, FDRRecord
-from app.schemas.schemas import InstitutionResponse, InstitutionCreate
+from app.schemas.schemas import InstitutionResponse, InstitutionCreate, InstitutionUpdate
 from app.security.auth import get_current_user, require_roles, verify_institution_access
 from app.services.audit import log_audit
 
@@ -95,3 +95,62 @@ def create_institution(
 
     log_audit(db, action="CREATE_INSTITUTION", entity_type="Institution", entity_id=str(inst.id), actor=current_user)
     return inst
+
+@router.put("/{id}", response_model=InstitutionResponse)
+def update_institution(
+    id: int,
+    data: InstitutionUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    verify_institution_access(current_user, id)
+    inst = db.query(Institution).filter(Institution.id == id).first()
+    if not inst:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Institution not found")
+
+    changes = {}
+    update_data = data.model_dump(exclude_unset=True)
+
+    # College users can only edit operational contact & address fields
+    for field, val in update_data.items():
+        if val is None:
+            continue
+        if current_user.role == "COLLEGE_USER" and field in ["status"]:
+            continue  # College cannot change regulatory status
+        old_val = getattr(inst, field, None)
+        if old_val != val:
+            changes[field] = {"old": str(old_val), "new": str(val)}
+            setattr(inst, field, val)
+
+    db.commit()
+    db.refresh(inst)
+
+    log_audit(
+        db,
+        action="UPDATE_INSTITUTION_PROFILE",
+        entity_type="Institution",
+        entity_id=str(inst.id),
+        actor=current_user,
+        metadata_json=changes
+    )
+
+    fdr_stats = db.query(
+        func.count(FDRRecord.id),
+        func.coalesce(func.sum(FDRRecord.amount), 0.0)
+    ).filter(FDRRecord.institution_id == inst.id).first()
+
+    return InstitutionResponse(
+        id=inst.id,
+        name=inst.name,
+        aicte_code=inst.aicte_code,
+        institution_type=inst.institution_type,
+        address=inst.address,
+        state=inst.state,
+        contact_person=inst.contact_person,
+        email=inst.email,
+        phone=inst.phone,
+        status=inst.status,
+        created_at=inst.created_at,
+        fdr_count=fdr_stats[0] if fdr_stats else 0,
+        total_fdr_amount=float(fdr_stats[1]) if fdr_stats else 0.0
+    )
